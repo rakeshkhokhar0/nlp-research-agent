@@ -194,3 +194,80 @@ async def test_get_messages_for_summarization(mock_session: AsyncMock) -> None:
 
     assert msgs == [m1, m2]
     mock_session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_list_conversations_with_status_and_pagination(mock_session: AsyncMock) -> None:
+    """Verify list_conversations executes query with limit, offset, and status filter."""
+    repo = ConversationRepository(mock_session)
+    c1 = Conversation(id=uuid.uuid4(), title="Chat 1", status="active")
+    c2 = Conversation(id=uuid.uuid4(), title="Chat 2", status="active")
+
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = [c1, c2]
+    mock_session.execute.return_value = mock_result
+
+    results = await repo.list_conversations(limit=10, offset=5, status="active")
+
+    assert results == [c1, c2]
+    mock_session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_list_conversations_without_status_filter(mock_session: AsyncMock) -> None:
+    """Verify list_conversations executes query without status condition when status is None."""
+    repo = ConversationRepository(mock_session)
+    c1 = Conversation(id=uuid.uuid4(), title="Chat 1", status="archived")
+
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = [c1]
+    mock_session.execute.return_value = mock_result
+
+    results = await repo.list_conversations(limit=25, offset=0, status=None)
+
+    assert results == [c1]
+    mock_session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_success(mock_session: AsyncMock) -> None:
+    """Verify delete_conversation retrieves, deletes and flushes conversation."""
+    repo = ConversationRepository(mock_session)
+    conv_id = uuid.uuid4()
+    mock_conv = Conversation(id=conv_id, title="To Delete")
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_conv
+    mock_session.execute.return_value = mock_result
+
+    deleted = await repo.delete_conversation(conv_id)
+
+    assert deleted is True
+    mock_session.delete.assert_called_once_with(mock_conv)
+    mock_session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_not_found_returns_false(mock_session: AsyncMock) -> None:
+    """Verify delete_conversation returns False when conversation is not found."""
+    repo = ConversationRepository(mock_session)
+    conv_id = uuid.uuid4()
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_session.execute.return_value = mock_result
+
+    deleted = await repo.delete_conversation(conv_id)
+
+    assert deleted is False
+    mock_session.delete.assert_not_called()
+    mock_session.flush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_invalid_type_raises(mock_session: AsyncMock) -> None:
+    """Verify delete_conversation raises TypeError for non-UUID id."""
+    repo = ConversationRepository(mock_session)
+
+    with pytest.raises(TypeError, match="conversation_id must be a uuid.UUID"):
+        await repo.delete_conversation("not-a-uuid")  # type: ignore[arg-type]

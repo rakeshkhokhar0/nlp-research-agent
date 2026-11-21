@@ -552,14 +552,6 @@ class OpenAIResponseClient:
         model: str | None = None,
     ) -> str:
         """Summarize conversation messages, updating existing summary if present.
-
-        Args:
-            messages: List of message dictionaries containing 'role' and 'content'.
-            existing_summary: Optional prior summary string to update.
-            model: Optional model override.
-
-        Returns:
-            Concise updated summary text.
         """
         target_model = model or self.default_model
         instructions = SUMMARIZER_SYSTEM_INSTRUCTIONS

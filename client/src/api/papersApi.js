@@ -42,3 +42,17 @@ export async function getPaperDetails(paperId) {
   const response = await apiClient.get(`/papers/${encodeURIComponent(paperId.trim())}`);
   return response.data;
 }
+
+/**
+ * Permanently deletes a research paper by UUID from the catalog, vector database, and storage.
+ *
+ * @param {string} paperId - UUID of the research paper to delete
+ * @returns {Promise<void>}
+ */
+export async function deletePaper(paperId) {
+  if (!paperId || typeof paperId !== 'string' || !paperId.trim()) {
+    throw new Error('paperId is required to delete a research paper.');
+  }
+
+  await apiClient.delete(`/papers/${encodeURIComponent(paperId.trim())}`);
+}

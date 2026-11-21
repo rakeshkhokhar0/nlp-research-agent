@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { uploadPaper, getIngestionJob, validatePdfFile } from '../../api/ingestionApi';
-import { listPapers } from '../../api/papersApi';
+import { listPapers, deletePaper } from '../../api/papersApi';
 import { useConversation } from '../../context/ConversationContext';
 import PaperCard from './PaperCard';
 import PaperDetailModal from './PaperDetailModal';
@@ -90,36 +90,34 @@ function getStatusBadge(status, stage) {
 export default function ResearchLibrary({ onNavigateToChat }) {
   const { startNewConversation, setInputPrompt } = useConversation();
 
-  // Active view tab: 'catalog' | 'upload'
   const [activeTab, setActiveTab] = useState('catalog');
 
-  // Catalog state
   const [papers, setPapers] = useState([]);
   const [isLoadingPapers, setIsLoadingPapers] = useState(false);
   const [papersError, setPapersError] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPaperId, setSelectedPaperId] = useState(null);
 
-  // Upload state
+  const [paperToDelete, setPaperToDelete] = useState(null);
+  const [isDeletingPaper, setIsDeletingPaper] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
+
   const [selectedFile, setSelectedFile] = useState(null);
   const [paperTitle, setPaperTitle] = useState('');
   const [doi, setDoi] = useState('');
   const [isDragging, setIsDragging] = useState(false);
   const [validationError, setValidationError] = useState(null);
 
-  // Ingestion execution state
   const [isUploading, setIsUploading] = useState(false);
   const [activeJob, setActiveJob] = useState(null);
   const [jobError, setJobError] = useState(null);
   const [uploadResult, setUploadResult] = useState(null);
 
-  // Ingestion history in current session
   const [sessionPapers, setSessionPapers] = useState([]);
 
   const fileInputRef = useRef(null);
   const pollingTimerRef = useRef(null);
 
-  // Load catalog papers from backend
   const fetchPapers = useCallback(async (query = '') => {
     setIsLoadingPapers(true);
     setPapersError(null);
@@ -133,7 +131,6 @@ export default function ResearchLibrary({ onNavigateToChat }) {
     }
   }, []);
 
-  // Initial load
   useEffect(() => {
     fetchPapers();
   }, [fetchPapers]);
@@ -156,6 +153,32 @@ export default function ResearchLibrary({ onNavigateToChat }) {
   const handleClearSearch = () => {
     setSearchQuery('');
     fetchPapers('');
+  };
+
+  const handleInitiateDelete = (paper) => {
+    setDeleteError(null);
+    setPaperToDelete(paper);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!paperToDelete || isDeletingPaper) return;
+    setIsDeletingPaper(true);
+    setDeleteError(null);
+    try {
+      await deletePaper(paperToDelete.id);
+      setPapers((prev) => prev.filter((p) => p.id !== paperToDelete.id));
+      setSessionPapers((prev) => prev.filter((p) => p.paper_id !== paperToDelete.id));
+      if (selectedPaperId === paperToDelete.id) {
+        setSelectedPaperId(null);
+      }
+      setPaperToDelete(null);
+      // Refresh list to keep total counts and pagination accurate
+      fetchPapers(searchQuery);
+    } catch (err) {
+      setDeleteError(formatDisplayError(err) || 'Failed to delete research paper.');
+    } finally {
+      setIsDeletingPaper(false);
+    }
   };
 
   const handleFileChange = (file) => {
@@ -395,9 +418,7 @@ export default function ResearchLibrary({ onNavigateToChat }) {
           </div>
         </div>
 
-        {/* ========================================================================= */}
-        {/* VIEW 1: LIBRARY CATALOG                                                  */}
-        {/* ========================================================================= */}
+        {/* View 1: Library Catalog */}
         {activeTab === 'catalog' && (
           <div className="space-y-5">
             {/* Catalog Controls Bar: Search & Refresh */}
@@ -465,6 +486,26 @@ export default function ResearchLibrary({ onNavigateToChat }) {
                 </button>
               </div>
             </div>
+
+            {/* Delete Error Banner */}
+            {deleteError && !paperToDelete && (
+              <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-center justify-between gap-3 text-xs text-rose-800 animate-fade-in">
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-rose-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span>{deleteError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDeleteError(null)}
+                  className="text-rose-500 hover:text-rose-700 font-bold px-1.5 py-0.5 rounded cursor-pointer"
+                  aria-label="Dismiss error"
+                >
+                  ×
+                </button>
+              </div>
+            )}
 
             {/* Error State */}
             {papersError && (
@@ -543,6 +584,7 @@ export default function ResearchLibrary({ onNavigateToChat }) {
                     paper={paper}
                     onViewDetails={(p) => setSelectedPaperId(p.id)}
                     onStartChat={handleStartChatWithPaper}
+                    onDelete={handleInitiateDelete}
                   />
                 ))}
               </div>
@@ -550,9 +592,7 @@ export default function ResearchLibrary({ onNavigateToChat }) {
           </div>
         )}
 
-        {/* ========================================================================= */}
-        {/* VIEW 2: UPLOAD NEW RESEARCH PAPER                                        */}
-        {/* ========================================================================= */}
+        {/* View 2: Upload New Research Paper */}
         {activeTab === 'upload' && (
           <div className="space-y-6">
             <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-2xs space-y-5">
@@ -941,7 +981,132 @@ export default function ResearchLibrary({ onNavigateToChat }) {
         paperId={selectedPaperId}
         onClose={() => setSelectedPaperId(null)}
         onStartChat={handleStartChatWithPaper}
+        onDelete={handleInitiateDelete}
       />
+
+      {/* Delete Confirmation Modal */}
+      {paperToDelete && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 sm:p-6 animate-fade-in">
+          <div
+            className="fixed inset-0"
+            onClick={() => !isDeletingPaper && setPaperToDelete(null)}
+            aria-hidden="true"
+          />
+
+          <div className="relative bg-white rounded-2xl shadow-xl border border-slate-200/80 w-full max-w-lg overflow-hidden flex flex-col z-10 animate-scale-up">
+            {/* Dialog Header */}
+            <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-xl bg-rose-50 border border-rose-100 flex items-center justify-center text-rose-600 shrink-0">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Delete Research Paper</h3>
+                  <p className="text-xs text-slate-500">Confirm permanent deletion from library</p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={isDeletingPaper}
+                onClick={() => setPaperToDelete(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer disabled:opacity-50"
+                aria-label="Close confirmation dialog"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Dialog Body */}
+            <div className="p-6 space-y-4">
+              {deleteError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 flex items-center justify-between">
+                  <span>{deleteError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteError(null)}
+                    className="text-rose-500 hover:text-rose-700 font-bold px-1"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
+              <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl">
+                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                  Paper Title
+                </span>
+                <p className="text-xs font-semibold text-slate-900 leading-snug">
+                  {paperToDelete.title}
+                </p>
+                {paperToDelete.original_filename && (
+                  <p className="text-[11px] text-slate-500 font-mono mt-1">
+                    File: {paperToDelete.original_filename}
+                  </p>
+                )}
+              </div>
+
+              <div className="text-xs text-slate-600 space-y-2 leading-relaxed">
+                <p>
+                  This operation will <strong className="text-rose-700">permanently delete</strong> this research paper, its parsed evidence chunks, vector embeddings, and associated Cloudinary PDF storage.
+                </p>
+                <p className="text-slate-500">
+                  Subsequent research questions and search queries will no longer be able to retrieve evidence from this paper. This action cannot be undone.
+                </p>
+              </div>
+
+              {['pending', 'processing'].includes(paperToDelete.ingestion_status?.toLowerCase()) && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start gap-2">
+                  <svg className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  <div>
+                    <span className="font-semibold block">Ingestion In Progress</span>
+                    <span>This paper is actively undergoing ingestion. Deletion is disabled until ingestion concludes.</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Dialog Footer */}
+            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                disabled={isDeletingPaper}
+                onClick={() => setPaperToDelete(null)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-200/60 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                disabled={isDeletingPaper || ['pending', 'processing'].includes(paperToDelete.ingestion_status?.toLowerCase())}
+                onClick={handleConfirmDelete}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 shadow-xs transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isDeletingPaper ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    <span>Permanently Delete</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

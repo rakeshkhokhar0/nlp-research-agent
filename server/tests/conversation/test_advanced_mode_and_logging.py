@@ -65,9 +65,7 @@ def mock_session_factory() -> MagicMock:
     return factory
 
 
-# ---------------------------------------------------------------------------
 # 1. Normal vs Advanced Mode Tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -291,9 +289,7 @@ async def test_citation_validation_rejects_hallucinated_ids(
         assert response.citations[0].chunk_id == sample_retrieved_chunk.chunk_id
 
 
-# ---------------------------------------------------------------------------
 # 2. Shared Logging, Sanitization, and Correlation Tests
-# ---------------------------------------------------------------------------
 
 
 def test_sanitize_log_text_redacts_credentials_and_tokens() -> None:

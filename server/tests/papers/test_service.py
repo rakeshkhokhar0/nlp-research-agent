@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.ingestion.storage import CloudinaryUploadResult
 from app.modules.papers.models import Paper, PaperFile
@@ -418,3 +419,100 @@ class TestPaperServiceFileRegistration:
                 upload_result=invalid_result,  # type: ignore[arg-type]
                 original_filename="test.pdf",
             )
+
+    @pytest.mark.asyncio
+    async def test_delete_paper_success_coordinates_db_index_and_storage(
+        self, mock_repository: AsyncMock
+    ) -> None:
+        """Verify delete_paper commits DB, triggers retrieval index refresh, and cleans Cloudinary file."""
+        from app.modules.ingestion.storage import CloudinaryStorage
+        from app.modules.retrieval.service import RetrievalService
+
+        paper_id = uuid.uuid4()
+        storage_keys = ["raw/papers/asset_123"]
+
+        mock_repository.delete_paper.return_value = (True, storage_keys)
+        mock_repository.session = AsyncMock(spec=AsyncSession)
+
+        mock_retrieval = MagicMock(spec=RetrievalService)
+        mock_retrieval.refresh_index = AsyncMock()
+
+        mock_storage = MagicMock(spec=CloudinaryStorage)
+        mock_storage.delete_file = MagicMock(return_value=True)
+
+        service = PaperService(
+            repository=mock_repository,
+            retrieval_service=mock_retrieval,
+            storage=mock_storage,
+        )
+
+        await service.delete_paper(paper_id)
+
+        mock_repository.delete_paper.assert_awaited_once_with(paper_id)
+        mock_repository.session.commit.assert_awaited_once()
+        mock_retrieval.refresh_index.assert_awaited_once()
+        mock_storage.delete_file.assert_called_once_with("raw/papers/asset_123")
+
+    @pytest.mark.asyncio
+    async def test_delete_paper_not_found_raises(
+        self, mock_repository: AsyncMock
+    ) -> None:
+        """Verify delete_paper raises PaperNotFoundError when repository returns False."""
+        from app.modules.papers.repository import PaperNotFoundError
+
+        paper_id = uuid.uuid4()
+        mock_repository.delete_paper.return_value = (False, [])
+        mock_repository.session = AsyncMock()
+
+        service = PaperService(mock_repository)
+
+        with pytest.raises(PaperNotFoundError, match=f"Research paper with id '{paper_id}' not found"):
+            await service.delete_paper(paper_id)
+
+        mock_repository.session.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_paper_active_job_conflict_raises(
+        self, mock_repository: AsyncMock
+    ) -> None:
+        """Verify delete_paper raises ActiveJobConflictError without committing."""
+        from app.core.exceptions import ActiveJobConflictError
+
+        paper_id = uuid.uuid4()
+        mock_repository.delete_paper.side_effect = ActiveJobConflictError("Ingestion active")
+        mock_repository.session = AsyncMock()
+
+        service = PaperService(mock_repository)
+
+        with pytest.raises(ActiveJobConflictError, match="Ingestion active"):
+            await service.delete_paper(paper_id)
+
+        mock_repository.session.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_paper_storage_failure_logs_warning_without_raising(
+        self, mock_repository: AsyncMock
+    ) -> None:
+        """Verify Cloudinary failure after DB commit does not raise exception."""
+        from app.core.exceptions import StorageDeleteError
+        from app.modules.ingestion.storage import CloudinaryStorage
+
+        paper_id = uuid.uuid4()
+        storage_keys = ["raw/papers/asset_fail"]
+
+        mock_repository.delete_paper.return_value = (True, storage_keys)
+        mock_repository.session = AsyncMock()
+
+        mock_storage = MagicMock(spec=CloudinaryStorage)
+        mock_storage.delete_file.side_effect = StorageDeleteError("Cloudinary 503")
+
+        service = PaperService(
+            repository=mock_repository,
+            storage=mock_storage,
+        )
+
+        # Should complete successfully without raising StorageDeleteError
+        await service.delete_paper(paper_id)
+
+        mock_repository.session.commit.assert_awaited_once()
+        mock_storage.delete_file.assert_called_once_with("raw/papers/asset_fail")

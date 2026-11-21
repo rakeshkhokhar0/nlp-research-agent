@@ -67,14 +67,15 @@ function getStatusBadge(status) {
  * @param {object} props.paper - The paper data object
  * @param {Function} props.onViewDetails - Handler to view detailed metadata
  * @param {Function} props.onStartChat - Handler to start a research conversation
+ * @param {Function} [props.onDelete] - Handler to trigger paper deletion confirmation
  */
-export default function PaperCard({ paper, onViewDetails, onStartChat }) {
+export default function PaperCard({ paper, onViewDetails, onStartChat, onDelete }) {
   const statusInfo = getStatusBadge(paper.ingestion_status);
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-2xs hover:shadow-xs hover:border-indigo-200 transition-all flex flex-col justify-between group">
       <div>
-        {/* Top Header: Ingestion Status Badge & Date */}
+        {/* Top Header: Ingestion Status Badge, Date & Delete Action */}
         <div className="flex items-center justify-between gap-2 mb-3">
           <div
             className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${statusInfo.className}`}
@@ -83,9 +84,27 @@ export default function PaperCard({ paper, onViewDetails, onStartChat }) {
             <span>{statusInfo.label}</span>
           </div>
 
-          <span className="text-[11px] text-slate-400 font-medium">
-            {formatPaperDate(paper.created_at)}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-slate-400 font-medium">
+              {formatPaperDate(paper.created_at)}
+            </span>
+            {onDelete && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(paper);
+                }}
+                title="Delete paper"
+                className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                aria-label={`Delete ${paper.title}`}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Paper Title */}

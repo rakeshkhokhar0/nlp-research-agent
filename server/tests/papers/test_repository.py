@@ -514,3 +514,155 @@ class TestValidateAndNormalizeSha256:
         assert validate_and_normalize_sha256(lowercase) == lowercase
         assert validate_and_normalize_sha256(uppercase) == lowercase
 
+
+class TestPaperRepositoryDelete:
+    """Tests for PaperRepository.delete_paper."""
+
+    @pytest.mark.asyncio
+    async def test_delete_paper_success(self) -> None:
+        """Verify delete_paper extracts storage keys, deletes citations and paper entity."""
+        from app.modules.ingestion.models import PaperChunk
+        from app.modules.conversation.models import Message, MessageCitation
+
+        session = AsyncMock(spec=AsyncSession)
+        repo = PaperRepository(session)
+        paper_id = uuid.uuid4()
+
+        mock_paper = Paper(id=paper_id, title="Test Paper")
+        mock_file = PaperFile(
+            id=uuid.uuid4(),
+            paper_id=paper_id,
+            storage_provider="cloudinary",
+            storage_key="raw/papers/test_key",
+            original_filename="test.pdf",
+            mime_type="application/pdf",
+            status="available",
+        )
+        mock_paper.files = [mock_file]
+
+        # 1. get_by_id returns mock_paper
+        # 2. active jobs check returns empty
+        # 3. citations query returns empty
+        mock_res_paper = MagicMock()
+        mock_res_paper.scalar_one_or_none.return_value = mock_paper
+
+        mock_res_jobs = MagicMock()
+        mock_res_jobs.scalars.return_value.first.return_value = None
+
+        mock_res_citations = MagicMock()
+        mock_res_citations.all.return_value = []
+
+        session.execute = AsyncMock(side_effect=[mock_res_paper, mock_res_jobs, mock_res_citations])
+
+        deleted, keys = await repo.delete_paper(paper_id)
+
+        assert deleted is True
+        assert keys == ["raw/papers/test_key"]
+        session.delete.assert_called_once_with(mock_paper)
+        session.flush.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_paper_not_found(self) -> None:
+        """Verify delete_paper returns (False, []) when paper does not exist."""
+        session = AsyncMock(spec=AsyncSession)
+        repo = PaperRepository(session)
+        paper_id = uuid.uuid4()
+
+        mock_res = MagicMock()
+        mock_res.scalar_one_or_none.return_value = None
+        session.execute = AsyncMock(return_value=mock_res)
+
+        deleted, keys = await repo.delete_paper(paper_id)
+
+        assert deleted is False
+        assert keys == []
+        session.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_paper_active_job_conflict(self) -> None:
+        """Verify delete_paper raises ActiveJobConflictError when ingestion job is active."""
+        from app.core.exceptions import ActiveJobConflictError
+        from app.modules.ingestion.models import IngestionJob
+
+        session = AsyncMock(spec=AsyncSession)
+        repo = PaperRepository(session)
+        paper_id = uuid.uuid4()
+
+        mock_paper = Paper(id=paper_id, title="Test Paper")
+        mock_paper.files = []
+
+        mock_job = IngestionJob(id=uuid.uuid4(), paper_id=paper_id, status="processing")
+
+        mock_res_paper = MagicMock()
+        mock_res_paper.scalar_one_or_none.return_value = mock_paper
+
+        mock_res_jobs = MagicMock()
+        mock_res_jobs.scalars.return_value.first.return_value = mock_job
+
+        session.execute = AsyncMock(side_effect=[mock_res_paper, mock_res_jobs])
+
+        with pytest.raises(ActiveJobConflictError, match="active ingestion job"):
+            await repo.delete_paper(paper_id)
+
+        session.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_paper_snapshots_citations(self) -> None:
+        """Verify delete_paper snapshots citation info into Message.metadata_ before deleting."""
+        from app.modules.ingestion.models import PaperChunk
+        from app.modules.conversation.models import Message, MessageCitation
+
+        session = AsyncMock(spec=AsyncSession)
+        repo = PaperRepository(session)
+        paper_id = uuid.uuid4()
+
+        mock_paper = Paper(id=paper_id, title="Attention Paper")
+        mock_paper.files = []
+
+        mock_chunk = PaperChunk(id=uuid.uuid4(), paper_id=paper_id, content="Transformer chunk", chunk_index=0)
+        mock_msg = Message(id=uuid.uuid4(), content="Answer text", metadata_={})
+        mock_cit = MessageCitation(
+            id=uuid.uuid4(),
+            message_id=mock_msg.id,
+            chunk_id=mock_chunk.id,
+            citation_order=1,
+            relevance_score=4.5,
+            cited_text="Transformer chunk",
+            page_number=3,
+        )
+
+        mock_res_paper = MagicMock()
+        mock_res_paper.scalar_one_or_none.return_value = mock_paper
+
+        mock_res_jobs = MagicMock()
+        mock_res_jobs.scalars.return_value.first.return_value = None
+
+        mock_res_citations = MagicMock()
+        mock_res_citations.all.return_value = [(mock_cit, mock_msg, mock_chunk)]
+
+        session.execute = AsyncMock(side_effect=[mock_res_paper, mock_res_jobs, mock_res_citations])
+
+        deleted, keys = await repo.delete_paper(paper_id)
+
+        assert deleted is True
+        # Verify citation was deleted
+        session.delete.assert_any_call(mock_cit)
+        # Verify paper was deleted
+        session.delete.assert_any_call(mock_paper)
+        # Verify message metadata has snapshot
+        assert "historical_citations" in mock_msg.metadata_
+        hist = mock_msg.metadata_["historical_citations"]
+        assert len(hist) == 1
+        assert hist[0]["paper_title"] == "Attention Paper"
+        assert hist[0]["page_number"] == 3
+        assert hist[0]["citation_order"] == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_paper_invalid_uuid_raises_type_error(self) -> None:
+        """Verify delete_paper raises TypeError for non-UUID input."""
+        session = AsyncMock(spec=AsyncSession)
+        repo = PaperRepository(session)
+
+        with pytest.raises(TypeError, match="paper_id must be a uuid.UUID"):
+            await repo.delete_paper("not-a-uuid")  # type: ignore[arg-type]
+

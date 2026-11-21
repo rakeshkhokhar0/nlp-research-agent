@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import apiClient from './client.js';
-import { listPapers, getPaperDetails } from './papersApi.js';
+import { listPapers, getPaperDetails, deletePaper } from './papersApi.js';
 
 test('papersApi - listPapers sends GET /papers with default pagination params', async (t) => {
   const originalGet = apiClient.get;
@@ -109,5 +109,52 @@ test('papersApi - getPaperDetails rejects missing paperId without network call',
   await assert.rejects(
     async () => getPaperDetails(null),
     /paperId is required/
+  );
+});
+
+test('papersApi - deletePaper sends DELETE /papers/{paper_id}', async (t) => {
+  const originalDelete = apiClient.delete;
+  let interceptedUrl = null;
+
+  apiClient.delete = async (url) => {
+    interceptedUrl = url;
+    return { data: null, status: 204 };
+  };
+
+  t.after(() => {
+    apiClient.delete = originalDelete;
+  });
+
+  await deletePaper('paper-to-delete-123');
+  assert.equal(interceptedUrl, '/papers/paper-to-delete-123');
+});
+
+test('papersApi - deletePaper rejects missing paperId without network call', async () => {
+  await assert.rejects(
+    async () => deletePaper(''),
+    /paperId is required/
+  );
+  await assert.rejects(
+    async () => deletePaper(null),
+    /paperId is required/
+  );
+});
+
+test('papersApi - deletePaper propagates error when backend fails', async (t) => {
+  const originalDelete = apiClient.delete;
+
+  apiClient.delete = async () => {
+    const error = new Error('Conflict: Ingestion active');
+    error.status = 409;
+    throw error;
+  };
+
+  t.after(() => {
+    apiClient.delete = originalDelete;
+  });
+
+  await assert.rejects(
+    async () => deletePaper('paper-123'),
+    /Conflict: Ingestion active/
   );
 });

@@ -129,9 +129,7 @@ class SectionDetectionResult:
     diagnostics: SectionDetectionDiagnostics
 
 
-# -------------------------------------------------------------------------
 # Detection Constants and Thresholds
-# -------------------------------------------------------------------------
 
 MIN_HEADING_CONFIDENCE: float = 0.50
 MAX_HEADING_CHARS: int = 140
@@ -335,7 +333,6 @@ class ResearchSectionDetector:
                 f"Expected PreprocessedResearchPaper instance, got {type(paper).__name__}"
             )
 
-        # Stage A: Flatten paragraphs in document order
         flattened = self._flatten_paragraphs(paper.pages)
         if not flattened:
             return SectionDetectionResult(
@@ -354,10 +351,8 @@ class ResearchSectionDetector:
         warnings: list[str] = []
         rejected_candidates_count = 0
 
-        # Stage A.2: Identify sequential list items across document
         sequential_list_indices = self._identify_sequential_list_indices(flattened)
 
-        # Stages B & C: Generate, score, and validate candidates
         heading_map: dict[int, _HeadingCandidate] = {}
 
         for p in flattened:
@@ -370,16 +365,12 @@ class ResearchSectionDetector:
         if not heading_map:
             warnings.append("No section headings were detected in the document.")
 
-        # Stage D & E: Determine hierarchy and create DetectedSection instances
         sections, unclassified_count = self._build_sections_and_hierarchy(heading_map, warnings)
 
-        # Stage F: Assign body paragraphs and preamble
         preamble = self._assign_paragraphs(flattened, heading_map, sections)
 
-        # Stage G: Calculate section spans (including descendant propagation)
         self._calculate_section_spans(sections)
 
-        # Stage H: Diagnostics
         for s in sections:
             if not s.paragraphs:
                 warnings.append(f"Section '{s.title}' on page {s.heading_page} has no body paragraphs.")
@@ -398,10 +389,6 @@ class ResearchSectionDetector:
             preamble=preamble,
             diagnostics=diagnostics,
         )
-
-    # -------------------------------------------------------------------------
-    # Stage A: Flatten Paragraphs
-    # -------------------------------------------------------------------------
 
     def _flatten_paragraphs(self, pages: list[PreprocessedPage]) -> list[_FlattenedParagraph]:
         """Flatten page paragraphs into an ordered sequence with global indices.
@@ -540,10 +527,6 @@ class ResearchSectionDetector:
         # 5. If all items in seq are concise, plausible heading noun phrases without verbs,
         # sentence periods, or list introductory context, it is a sequence of headings, NOT a list.
         return False
-
-    # -------------------------------------------------------------------------
-    # Stages B & C: Generate, Score, and Validate Heading Candidates
-    # -------------------------------------------------------------------------
 
     def _evaluate_paragraph(
         self,
@@ -781,10 +764,6 @@ class ResearchSectionDetector:
         )
         return any(k in normalized_title for k in keywords)
 
-    # -------------------------------------------------------------------------
-    # Stage D: Normalize and Classify Headings
-    # -------------------------------------------------------------------------
-
     def _normalize_title(self, title: str) -> str:
         """Normalize heading text for comparison and classification."""
         t = " ".join(title.lower().split()).strip()
@@ -813,10 +792,6 @@ class ResearchSectionDetector:
             return SectionType.APPENDIX
 
         return SectionType.CUSTOM
-
-    # -------------------------------------------------------------------------
-    # Stage E: Determine Heading Hierarchy
-    # -------------------------------------------------------------------------
 
     def _extract_numbering_and_level(self, text: str) -> tuple[str | None, int | None]:
         """Extract explicit numbering and determine structural hierarchy level."""
@@ -912,10 +887,6 @@ class ResearchSectionDetector:
 
         return sections, unclassified_count
 
-    # -------------------------------------------------------------------------
-    # Stage F: Assign Paragraphs
-    # -------------------------------------------------------------------------
-
     def _assign_paragraphs(
         self,
         flattened: list[_FlattenedParagraph],
@@ -949,10 +920,6 @@ class ResearchSectionDetector:
                 current_section.paragraphs.append(sec_para)
 
         return preamble
-
-    # -------------------------------------------------------------------------
-    # Stage G: Calculate Section Spans
-    # -------------------------------------------------------------------------
 
     def _calculate_section_spans(self, sections: list[DetectedSection]) -> None:
         """Compute start_page and end_page for all sections, including descendant spans."""

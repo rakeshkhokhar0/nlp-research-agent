@@ -12,9 +12,7 @@ from typing import Any, Generator
 
 from app.core.config import LoggingSettings, logging_settings
 
-# ---------------------------------------------------------------------------
 # Asynchronous Context Variables for Correlation Tracking
-# ---------------------------------------------------------------------------
 request_id_ctx: ContextVar[str | None] = ContextVar("request_id_ctx", default=None)
 conversation_id_ctx: ContextVar[str | None] = ContextVar("conversation_id_ctx", default=None)
 ingestion_job_id_ctx: ContextVar[str | None] = ContextVar("ingestion_job_id_ctx", default=None)
@@ -60,9 +58,7 @@ def correlation_context(
             var.reset(token)
 
 
-# ---------------------------------------------------------------------------
 # Secret Scrubbing & Redaction
-# ---------------------------------------------------------------------------
 _SECRET_PATTERNS = [
     re.compile(r"(sk-[a-zA-Z0-9_-]{16,})", re.IGNORECASE),
     re.compile(r"(api[_-]?key\s*[:=]\s*['\"]?)([^'\";\s]{8,})(['\"]?)", re.IGNORECASE),
@@ -121,9 +117,7 @@ def sanitize_log_preview_value(val: Any, max_len: int = 80) -> Any:
     return sanitize_log_value(val)
 
 
-# ---------------------------------------------------------------------------
 # Structured Log Formatter & Filter
-# ---------------------------------------------------------------------------
 class CorrelationFilter(logging.Filter):
     """Logging filter that injects active correlation IDs into every LogRecord."""
 
@@ -170,9 +164,7 @@ class StructuredLogFormatter(logging.Formatter):
         return formatted
 
 
-# ---------------------------------------------------------------------------
 # Structured Event Logging Helper
-# ---------------------------------------------------------------------------
 _NLP_TRACE_EVENT_NAMES = {
     "retrieval_query_diagnostics",
     "retrieval_candidates_evaluated",
@@ -280,9 +272,7 @@ def log_event(
         pass
 
 
-# ---------------------------------------------------------------------------
 # Centralized Setup
-# ---------------------------------------------------------------------------
 def setup_logging(settings: LoggingSettings | None = None) -> None:
     """Configure standard logging with StructuredLogFormatter and CorrelationFilter."""
     cfg = settings or logging_settings

@@ -35,10 +35,6 @@ from app.modules.retrieval.service import RetrievalService
 logger = logging.getLogger(__name__)
 
 
-# -------------------------------------------------------------------------
-# Existing deletion guard
-# -------------------------------------------------------------------------
-
 def check_active_jobs_for_deletion(
     target_type: str,
     target_id: uuid.UUID,
@@ -51,10 +47,6 @@ def check_active_jobs_for_deletion(
             f"Cannot delete {target_type} {target_id}: {len(in_progress)} active job(s) in progress"
         )
 
-
-# -------------------------------------------------------------------------
-# Result Containers
-# -------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class IngestionResult:
@@ -93,10 +85,6 @@ class IngestionResult:
     status: str
     title: str | None = None
 
-
-# -------------------------------------------------------------------------
-# Ingestion Service
-# -------------------------------------------------------------------------
 
 class IngestionService:
     """Coordinates research paper parsing, processing, embedding, and atomic persistence.
@@ -352,9 +340,6 @@ class IngestionService:
         if not isinstance(original_filename, str) or not original_filename.strip():
             raise ValueError("original_filename must be a non-empty string.")
 
-        # ---------------------------------------------------------------------
-        # Stage A — Input validation, SHA-256 calculation, and PDF parsing
-        # ---------------------------------------------------------------------
         self.storage.validate_pdf(pdf_bytes)
         checksum = hashlib.sha256(pdf_bytes).hexdigest()
         file_size = len(pdf_bytes)
@@ -417,9 +402,6 @@ class IngestionService:
             except (ValueError, TypeError):
                 effective_pub_date = None
 
-        # ---------------------------------------------------------------------
-        # Stage B — Paper resolution (short transaction)
-        # ---------------------------------------------------------------------
         async with self.session_factory() as session:
             async with session.begin():
                 paper_repo = PaperRepository(session)
@@ -442,15 +424,11 @@ class IngestionService:
         paper_reused: bool = resolution.paper_reused
         file_reused: bool = resolution.file_reused
 
-        # ---------------------------------------------------------------------
-        # Stage C & D — Storage upload (outside DB transaction) & Job creation
-        # ---------------------------------------------------------------------
         new_upload_result: CloudinaryUploadResult | None = None
         new_upload_created: bool = False
         registration_committed: bool = False
 
         if not file_reused or matching_file is None:
-            # Upload to Cloudinary outside any database transaction
             new_upload_result = await asyncio.to_thread(self.storage.upload_file, pdf_bytes)
             new_upload_created = True
 
@@ -576,13 +554,9 @@ class IngestionService:
                 await self._cleanup_orphan_upload(new_upload_result.public_id, checksum)
             raise
 
-        # ---------------------------------------------------------------------
-        # Stage E — Processing pipeline outside database transactions
-        # ---------------------------------------------------------------------
         current_stage = "preprocessing"
         with correlation_context(ingestion_job_id=str(job_id) if job_id else None):
             try:
-                # 1. Text Preprocessing
                 current_stage = "preprocessing"
                 await self._update_job_stage(job_id, current_stage)
                 pre_start_t = time.perf_counter()
@@ -610,7 +584,6 @@ class IngestionService:
                     duration_ms=round(pre_duration_ms, 2),
                 )
 
-                # 2. Section Detection
                 current_stage = "section_detection"
                 await self._update_job_stage(job_id, current_stage)
                 sec_start_t = time.perf_counter()
@@ -636,7 +609,6 @@ class IngestionService:
                     duration_ms=round(sec_duration_ms, 2),
                 )
 
-                # 3. Chunking
                 current_stage = "chunking"
                 await self._update_job_stage(job_id, current_stage)
                 chunk_start_t = time.perf_counter()
@@ -698,7 +670,6 @@ class IngestionService:
                             content_preview=preview_content,
                         )
 
-                # 4. Dense Vector Embedding Generation (concurrency throttled via semaphore)
                 current_stage = "embedding"
                 await self._update_job_stage(job_id, current_stage)
                 embed_start_t = time.perf_counter()
@@ -721,9 +692,6 @@ class IngestionService:
                     duration_ms=round(embed_duration_ms, 2),
                 )
 
-                # -----------------------------------------------------------------
-                # Stage F — Atomic persistence and version activation
-                # -----------------------------------------------------------------
                 current_stage = "persisting"
                 await self._update_job_stage(job_id, current_stage)
                 persist_start_t = time.perf_counter()
@@ -731,12 +699,10 @@ class IngestionService:
                     async with session.begin():
                         ingestion_repo = IngestionRepository(session)
 
-                        # 1. Resolve or create active embedding model
                         embedding_model = await ingestion_repo.get_or_create_embedding_model(
                             self.embedder.config
                         )
 
-                        # 2. Persist staged chunks
                         persisted_chunks = await ingestion_repo.bulk_create_chunks(
                             paper_id=paper_id,
                             ingestion_job_id=job_id,
@@ -744,21 +710,18 @@ class IngestionService:
                             chunking_version=self.chunker.config.chunking_version,
                         )
 
-                        # 3. Persist embeddings
                         persisted_embeddings = await ingestion_repo.bulk_create_embeddings(
                             chunks=persisted_chunks,
                             embedding_result=embedding_result,
                             embedding_model_id=embedding_model.id,
                         )
 
-                        # 4 & 5. Atomically activate staged chunks and demote previous active chunks
                         await ingestion_repo.activate_chunks_for_job(
                             paper_id=paper_id,
                             ingestion_job_id=job_id,
                             embedding_model_id=embedding_model.id,
                         )
 
-                        # 6 & 7. Conclude job as completed
                         now = datetime.now(timezone.utc)
                         await ingestion_repo.update_job_status(
                             job_id=job_id,
@@ -799,14 +762,10 @@ class IngestionService:
                     )
                 raise
             except Exception as exc:
-                # Stage H — Failure handling: record failed status on job using fresh session
                 if job_id is not None:
                     await self._record_job_failure(job_id, str(exc))
                 raise
 
-        # ---------------------------------------------------------------------
-        # Stage G — Retrieval refresh (only after successful database commit)
-        # ---------------------------------------------------------------------
         if self.retrieval_service is not None:
             try:
                 refresh_start_t = time.perf_counter()

@@ -18,16 +18,8 @@ from typing import Any, Protocol, runtime_checkable
 from app.modules.ingestion.chunker import ResearchChunk
 
 
-# -------------------------------------------------------------------------
-# Supported Constants
-# -------------------------------------------------------------------------
-
 SUPPORTED_PROVIDERS: frozenset[str] = frozenset({"sentence-transformers"})
 
-
-# -------------------------------------------------------------------------
-# Exceptions Hierarchy
-# -------------------------------------------------------------------------
 
 class EmbeddingError(Exception):
     """Base exception for all embedding-related errors."""
@@ -44,10 +36,6 @@ class EmbeddingGenerationError(EmbeddingError):
 class EmbeddingValidationError(EmbeddingError, ValueError):
     """Raised when embedding configuration, input chunks, or vectors fail validation."""
 
-
-# -------------------------------------------------------------------------
-# Configuration
-# -------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
@@ -102,10 +90,6 @@ class EmbeddingConfig:
                 "model_revision must not be an empty string when provided."
             )
 
-
-# -------------------------------------------------------------------------
-# Output Data Structures
-# -------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class ChunkEmbedding:
@@ -182,10 +166,6 @@ class EmbeddingResult:
     diagnostics: EmbeddingDiagnostics
 
 
-# -------------------------------------------------------------------------
-# Model Backend Protocol
-# -------------------------------------------------------------------------
-
 @runtime_checkable
 class EmbeddingModelProtocol(Protocol):
     """Protocol defining the interface required from underlying embedding model backends.
@@ -219,10 +199,6 @@ class EmbeddingModelProtocol(Protocol):
         """
         ...
 
-
-# -------------------------------------------------------------------------
-# Model Manager
-# -------------------------------------------------------------------------
 
 class EmbeddingModelManager:
     """Manages the lifecycle, configuration, lazy loading, and caching of embedding models.
@@ -301,10 +277,6 @@ class EmbeddingModelManager:
         self._model = None
 
 
-# -------------------------------------------------------------------------
-# Research Embedding Generator
-# -------------------------------------------------------------------------
-
 class ResearchEmbeddingGenerator:
     """Generates dense vector embeddings for research paper chunks.
 
@@ -379,7 +351,6 @@ class ResearchEmbeddingGenerator:
 
         start_time = time.perf_counter()
 
-        # Empty input: return empty result without loading model
         if not chunks:
             elapsed = time.perf_counter() - start_time
             return EmbeddingResult(
@@ -397,7 +368,6 @@ class ResearchEmbeddingGenerator:
                 ),
             )
 
-        # Non-empty input: obtain model through model manager
         model = self.model_manager.get_model()
 
         all_embeddings: list[ChunkEmbedding] = []

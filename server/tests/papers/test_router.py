@@ -171,3 +171,64 @@ def test_get_paper_details_invalid_uuid(client: TestClient) -> None:
     """Verify GET /api/v1/papers/{paper_id} with malformed UUID returns 422."""
     response = client.get("/api/v1/papers/not-a-valid-uuid")
     assert response.status_code in {status.HTTP_422_UNPROCESSABLE_ENTITY, 422}
+
+
+def test_delete_paper_success(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify DELETE /api/v1/papers/{paper_id} deletes paper and returns 204 No Content."""
+    from app.modules.papers.service import PaperService
+
+    paper_id = uuid.uuid4()
+    mock_delete = AsyncMock(return_value=None)
+    monkeypatch.setattr(PaperService, "delete_paper", mock_delete)
+
+    response = client.delete(f"/api/v1/papers/{paper_id}")
+    assert response.status_code == status.HTTP_204_NO_CONTENT
+    assert response.text == ""
+    mock_delete.assert_awaited_once_with(paper_id)
+
+
+def test_delete_paper_not_found(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify DELETE /api/v1/papers/{paper_id} with unknown UUID returns 404."""
+    from app.modules.papers.repository import PaperNotFoundError
+    from app.modules.papers.service import PaperService
+
+    paper_id = uuid.uuid4()
+    mock_delete = AsyncMock(side_effect=PaperNotFoundError(f"Research paper with id '{paper_id}' not found."))
+    monkeypatch.setattr(PaperService, "delete_paper", mock_delete)
+
+    response = client.delete(f"/api/v1/papers/{paper_id}")
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+    assert f"Research paper with id '{paper_id}' not found" in response.json()["detail"]
+
+
+def test_delete_paper_active_job_conflict(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify DELETE /api/v1/papers/{paper_id} during active ingestion returns 409 Conflict."""
+    from app.core.exceptions import ActiveJobConflictError
+    from app.modules.papers.service import PaperService
+
+    paper_id = uuid.uuid4()
+    mock_delete = AsyncMock(side_effect=ActiveJobConflictError("Active job conflict: Ingestion in progress"))
+    monkeypatch.setattr(PaperService, "delete_paper", mock_delete)
+
+    response = client.delete(f"/api/v1/papers/{paper_id}")
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert "Active job conflict" in response.json()["detail"]
+
+
+def test_delete_paper_invalid_uuid(client: TestClient) -> None:
+    """Verify DELETE /api/v1/papers/{paper_id} with malformed UUID returns 422."""
+    response = client.delete("/api/v1/papers/not-a-valid-uuid")
+    assert response.status_code in {status.HTTP_422_UNPROCESSABLE_ENTITY, 422}
+
+
+def test_delete_paper_server_error(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify DELETE /api/v1/papers/{paper_id} returns 500 when unexpected error occurs."""
+    from app.modules.papers.service import PaperService
+
+    paper_id = uuid.uuid4()
+    mock_delete = AsyncMock(side_effect=RuntimeError("Database failure"))
+    monkeypatch.setattr(PaperService, "delete_paper", mock_delete)
+
+    response = client.delete(f"/api/v1/papers/{paper_id}")
+    assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert "unexpected error occurred" in response.json()["detail"].lower()

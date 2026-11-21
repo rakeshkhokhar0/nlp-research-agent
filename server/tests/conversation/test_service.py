@@ -119,6 +119,108 @@ async def test_get_conversation_not_found_raises(
             await service.get_conversation(unknown_id)
 
 
+@pytest.mark.asyncio
+async def test_list_conversations_maps_to_responses(
+    mock_session_factory: MagicMock, mock_session: AsyncMock
+) -> None:
+    """Verify list_conversations queries repository and correctly maps chat_type from metadata."""
+    service = ConversationService(session_factory=mock_session_factory)
+    now = datetime.now(timezone.utc)
+
+    conv_paper = Conversation(
+        id=uuid.uuid4(),
+        title="Paper Chat",
+        status="active",
+        created_at=now,
+        last_message_at=now,
+        metadata_={"chat_type": "paper"},
+    )
+    conv_general = Conversation(
+        id=uuid.uuid4(),
+        title="General Chat",
+        status="active",
+        created_at=now,
+        last_message_at=now,
+        metadata_={"chat_type": "general"},
+    )
+    conv_default = Conversation(
+        id=uuid.uuid4(),
+        title="Legacy Chat",
+        status="active",
+        created_at=now,
+        last_message_at=None,
+        metadata_=None,
+    )
+
+    with patch("app.modules.conversation.service.ConversationRepository") as mock_repo_cls:
+        repo = mock_repo_cls.return_value
+        repo.list_conversations = AsyncMock(return_value=[conv_paper, conv_general, conv_default])
+
+        results = await service.list_conversations(limit=10, offset=0, status="active")
+
+        assert len(results) == 3
+        assert results[0].id == conv_paper.id
+        assert results[0].chat_type == "paper"
+        assert results[1].id == conv_general.id
+        assert results[1].chat_type == "general"
+        assert results[2].id == conv_default.id
+        assert results[2].chat_type == "paper"  # Defaults to paper
+        repo.list_conversations.assert_awaited_once_with(limit=10, offset=0, status="active")
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_success(
+    mock_session_factory: MagicMock, mock_session: AsyncMock
+) -> None:
+    """Verify delete_conversation calls repo.delete_conversation in transaction."""
+    service = ConversationService(session_factory=mock_session_factory)
+    conv_id = uuid.uuid4()
+
+    with patch("app.modules.conversation.service.ConversationRepository") as mock_repo_cls:
+        repo = mock_repo_cls.return_value
+        repo.delete_conversation = AsyncMock(return_value=True)
+
+        await service.delete_conversation(conv_id)
+
+        repo.delete_conversation.assert_awaited_once_with(conv_id)
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_not_found_raises(
+    mock_session_factory: MagicMock, mock_session: AsyncMock
+) -> None:
+    """Verify delete_conversation raises ConversationNotFoundError when repo returns False."""
+    service = ConversationService(session_factory=mock_session_factory)
+    conv_id = uuid.uuid4()
+
+    with patch("app.modules.conversation.service.ConversationRepository") as mock_repo_cls:
+        repo = mock_repo_cls.return_value
+        repo.delete_conversation = AsyncMock(return_value=False)
+
+        with pytest.raises(ConversationNotFoundError, match=f"Conversation '{conv_id}' not found"):
+            await service.delete_conversation(conv_id)
+
+        repo.delete_conversation.assert_awaited_once_with(conv_id)
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_rollback_on_failure(
+    mock_session_factory: MagicMock, mock_session: AsyncMock
+) -> None:
+    """Verify database transaction rolls back if an unhandled error occurs during deletion."""
+    service = ConversationService(session_factory=mock_session_factory)
+    conv_id = uuid.uuid4()
+
+    with patch("app.modules.conversation.service.ConversationRepository") as mock_repo_cls:
+        repo = mock_repo_cls.return_value
+        repo.delete_conversation = AsyncMock(side_effect=RuntimeError("Database failure"))
+
+        with pytest.raises(RuntimeError, match="Database failure"):
+            await service.delete_conversation(conv_id)
+
+        repo.delete_conversation.assert_awaited_once_with(conv_id)
+
+
 # -----------------------------------------------------------------------------
 # Q&A Workflow Tests
 # -----------------------------------------------------------------------------

@@ -30,10 +30,6 @@ from app.modules.retrieval.models import (
 )
 
 
-# -------------------------------------------------------------------------
-# Repository Exceptions Hierarchy
-# -------------------------------------------------------------------------
-
 class IngestionRepositoryError(Exception):
     """Base exception for all ingestion repository errors."""
 
@@ -58,10 +54,6 @@ class ChunkActivationError(IngestionRepositoryError):
     """Raised when atomic chunk activation preconditions fail."""
 
 
-# -------------------------------------------------------------------------
-# Ingestion Repository
-# -------------------------------------------------------------------------
-
 class IngestionRepository:
     """Repository managing database persistence for ingestion jobs, chunks, and embeddings.
 
@@ -84,10 +76,6 @@ class IngestionRepository:
                 f"session must be an AsyncSession, got {type(session).__name__}"
             )
         self.session: AsyncSession = session
-
-    # -------------------------------------------------------------------------
-    # A. Ingestion Job Operations
-    # -------------------------------------------------------------------------
 
     async def create_job(
         self,
@@ -294,10 +282,6 @@ class IngestionRepository:
         # Fetch and return the existing job without changing it.
         return await self.get_job(job_id)
 
-    # -------------------------------------------------------------------------
-    # B. Embedding Model Resolution
-    # -------------------------------------------------------------------------
-
     def _validate_embedding_model_compatibility(
         self,
         model: EmbeddingModel,
@@ -409,10 +393,6 @@ class IngestionRepository:
         model = result.scalar_one()
         self._validate_embedding_model_compatibility(model, config, distance_metric)
         return model
-
-    # -------------------------------------------------------------------------
-    # C. Bulk Chunk Persistence
-    # -------------------------------------------------------------------------
 
     async def bulk_create_chunks(
         self,
@@ -548,10 +528,6 @@ class IngestionRepository:
         # Deterministic ordering by chunk_index
         paper_chunks.sort(key=lambda x: x.chunk_index)
         return paper_chunks
-
-    # -------------------------------------------------------------------------
-    # D. Bulk Embedding Persistence
-    # -------------------------------------------------------------------------
 
     async def bulk_create_embeddings(
         self,
@@ -711,10 +687,6 @@ class IngestionRepository:
         chunk_embeddings.sort(key=lambda x: x[0])
         return [ce[1] for ce in chunk_embeddings]
 
-    # -------------------------------------------------------------------------
-    # E. Retrieve Job Chunks
-    # -------------------------------------------------------------------------
-
     async def get_job_chunks(
         self,
         ingestion_job_id: uuid.UUID,
@@ -742,10 +714,6 @@ class IngestionRepository:
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
-
-    # -------------------------------------------------------------------------
-    # F. Atomic Chunk Version Activation
-    # -------------------------------------------------------------------------
 
     async def activate_chunks_for_job(
         self,
@@ -867,10 +835,6 @@ class IngestionRepository:
         activated_res = await self.session.execute(chunks_stmt)
         activated_chunks = list(activated_res.scalars().all())
         return activated_chunks
-
-    # -------------------------------------------------------------------------
-    # G. Idempotency, Concurrency & Locking Queries
-    # -------------------------------------------------------------------------
 
     async def get_latest_completed_job(
         self,

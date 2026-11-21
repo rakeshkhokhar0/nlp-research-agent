@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from app.core.logging_config import correlation_context
 from app.modules.conversation.schemas import (
@@ -66,6 +66,28 @@ async def create_conversation(
 
 
 @router.get(
+    "",
+    response_model=list[ConversationResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List all conversations",
+    description=(
+        "Retrieve conversations ordered by most recent activity. "
+        "Security Note: In this prototype, conversations are not yet user-isolated. "
+        "This is acceptable only for our controlled single-user prototype and "
+        "must be restricted by user ownership before public multi-user deployment."
+    ),
+)
+async def list_conversations(
+    limit: int = Query(default=50, ge=1, le=100, description="Max number of conversations to return"),
+    offset: int = Query(default=0, ge=0, description="Number of items to skip"),
+    status: str | None = Query(default="active", description="Filter by status ('active', 'archived')"),
+    service: ConversationService = Depends(get_conversation_service),
+) -> list[ConversationResponse]:
+    """Retrieve list of conversations sorted by most recent activity."""
+    return await service.list_conversations(limit=limit, offset=offset, status=status)
+
+
+@router.get(
     "/{conversation_id}",
     response_model=ConversationResponse,
     status_code=status.HTTP_200_OK,
@@ -85,6 +107,32 @@ async def get_conversation(
             detail=str(exc),
         ) from exc
 
+
+@router.delete(
+    "/{conversation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete conversation",
+    description="Permanently delete a conversation and all associated messages and citations.",
+)
+async def delete_conversation(
+    conversation_id: uuid.UUID,
+    service: ConversationService = Depends(get_conversation_service),
+) -> Response:
+    """Permanently delete a conversation by UUID."""
+    try:
+        await service.delete_conversation(conversation_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except ConversationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        logger.error("Failed to delete conversation %s: %s", conversation_id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred while deleting the conversation.",
+        ) from exc
 
 @router.post(
     "/{conversation_id}/messages",

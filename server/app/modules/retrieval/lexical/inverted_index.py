@@ -28,15 +28,6 @@ class InvertedIndex:
     """Inverted index data structure for fast lexical term retrieval."""
 
     def __init__(self, preprocessor: Optional[TextPreprocessor] = None) -> None:
-        """Initialize the inverted index.
-
-        Args:
-            preprocessor: Optional TextPreprocessor instance. If None,
-                a default TextPreprocessor is instantiated.
-
-        Raises:
-            TypeError: If preprocessor is not an instance of TextPreprocessor.
-        """
         if preprocessor is not None and not isinstance(preprocessor, TextPreprocessor):
             raise TypeError(
                 f"preprocessor must be an instance of TextPreprocessor, got {type(preprocessor).__name__}"
@@ -55,22 +46,6 @@ class InvertedIndex:
         return self._preprocessor
 
     def add_document(self, document_id: int, text: str) -> None:
-        """Add or replace a document in the inverted index.
-
-        Preprocesses text into unique tokens and term frequencies, updates term
-        postings, and maintains document-to-term tracking. If document_id already
-        exists, previous postings and frequencies are cleanly removed only after
-        successful preprocessing to eliminate stale terms without risking partial
-        state if preprocessing fails.
-
-        Args:
-            document_id: Positive integer document identifier.
-            text: Raw document text to index.
-
-        Raises:
-            TypeError: If document_id is not an int (or is a bool) or text is not a str.
-            ValueError: If document_id is not positive (> 0).
-        """
         _validate_document_id(document_id)
         if not isinstance(text, str):
             raise TypeError(f"text must be a str, got {type(text).__name__}")
@@ -99,19 +74,6 @@ class InvertedIndex:
             self.index[term].add(document_id)
 
     def remove_document(self, document_id: int) -> None:
-        """Remove a document from the inverted index.
-
-        Removes document_id from all term postings, deletes terms whose posting
-        sets become empty, and removes the document from the reverse mapping and
-        term frequency tracking. Safe and idempotent if document_id does not exist.
-
-        Args:
-            document_id: Positive integer document identifier.
-
-        Raises:
-            TypeError: If document_id is not an int (or is a bool).
-            ValueError: If document_id is not positive (> 0).
-        """
         _validate_document_id(document_id)
 
         if document_id not in self.document_terms:

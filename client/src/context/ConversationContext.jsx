@@ -1,20 +1,14 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import * as conversationApi from '../api/conversationApi';
 
-const STORAGE_KEY = 'nlp_research_conversations';
 const ACTIVE_CONV_KEY = 'nlp_research_active_conv_id';
 
 const ConversationContext = createContext(null);
 
 export function ConversationProvider({ children }) {
-  const [conversations, setConversations] = useState(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      return stored ? JSON.parse(stored) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [conversations, setConversations] = useState([]);
+  const [isConversationsLoading, setIsConversationsLoading] = useState(true);
+  const [conversationsError, setConversationsError] = useState(null);
 
   const [activeConversationId, setActiveConversationId] = useState(() => {
     try {
@@ -31,18 +25,11 @@ export function ConversationProvider({ children }) {
   const [inputPrompt, setInputPrompt] = useState('');
   const [researchMode, setResearchMode] = useState('normal');
   const [chatType, setChatType] = useState('paper'); // 'paper' | 'general'
+  const [deletingConversationIds, setDeletingConversationIds] = useState(() => new Set());
 
   // Ref to prevent double-execution in StrictMode or rapid clicks
   const isCreatingRef = useRef(false);
-
-  // Sync conversations to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
-    } catch (err) {
-      console.error('Failed to persist conversations to localStorage:', err);
-    }
-  }, [conversations]);
+  const deletingRef = useRef(new Set());
 
   // Sync activeConversationId to localStorage
   useEffect(() => {
@@ -98,16 +85,85 @@ export function ConversationProvider({ children }) {
     }
   }, []);
 
-  // Fetch history on initial mount if an active conversation exists
+  // Fetch conversation list from backend
+  const loadConversations = useCallback(async (preferredActiveId = null) => {
+    setIsConversationsLoading(true);
+    setConversationsError(null);
+
+    try {
+      const list = await conversationApi.listConversations();
+      const mapped = list.map((c) => ({
+        id: c.id,
+        title: c.title || (c.chat_type === 'general' ? 'New General Chat' : 'New Research Chat'),
+        chatType: c.chat_type || 'paper',
+        status: c.status,
+        createdAt: c.created_at,
+        lastMessageAt: c.last_message_at || c.created_at,
+      }));
+
+      // Sort by most recent activity descending
+      mapped.sort(
+        (a, b) =>
+          new Date(b.lastMessageAt || b.createdAt) -
+          new Date(a.lastMessageAt || a.createdAt)
+      );
+
+      setConversations(mapped);
+
+      // Determine active conversation:
+      // candidate: preferredActiveId || activeConversationId || localStorage
+      let candidateId = preferredActiveId;
+      if (!candidateId) {
+        try {
+          candidateId = localStorage.getItem(ACTIVE_CONV_KEY);
+        } catch {
+          candidateId = null;
+        }
+      }
+      if (!candidateId && activeConversationId) {
+        candidateId = activeConversationId;
+      }
+
+      if (candidateId && mapped.some((c) => c.id === candidateId)) {
+        setActiveConversationId(candidateId);
+        const target = mapped.find((c) => c.id === candidateId);
+        if (target?.chatType) {
+          setChatType(target.chatType);
+        }
+      } else if (mapped.length > 0) {
+        // Fresh browser profile or invalid stored ID: default to the most recently active conversation
+        setActiveConversationId(mapped[0].id);
+        if (mapped[0].chatType) {
+          setChatType(mapped[0].chatType);
+        }
+      } else {
+        setActiveConversationId(null);
+        setMessages([]);
+      }
+      return mapped;
+    } catch (err) {
+      console.error('Failed to load conversations from backend:', err);
+      setConversationsError(err.message || 'Failed to load conversations from server.');
+      return [];
+    } finally {
+      setIsConversationsLoading(false);
+    }
+  }, [activeConversationId]);
+
+  // Load conversations on initial mount
+  useEffect(() => {
+    loadConversations();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Fetch history whenever activeConversationId changes
   useEffect(() => {
     if (activeConversationId) {
       loadConversationHistory(activeConversationId);
-    } else if (conversations.length > 0) {
-      // If active conversation is not set but conversations exist, activate the first one
-      setActiveConversationId(conversations[0].id);
+    } else {
+      setMessages([]);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeConversationId]);
+  }, [activeConversationId, loadConversationHistory]);
 
   /**
    * Starts a new conversation session via backend POST /conversations.
@@ -169,18 +225,45 @@ export function ConversationProvider({ children }) {
   );
 
   /**
-   * Removes a conversation entry from local tracking.
+   * Permanently deletes a conversation from the backend and updates local state.
    */
-  const removeConversation = useCallback(
-    (convId) => {
-      setConversations((prev) => prev.filter((c) => c.id !== convId));
-      if (activeConversationId === convId) {
-        const remaining = conversations.filter((c) => c.id !== convId);
-        setActiveConversationId(remaining.length > 0 ? remaining[0].id : null);
-        setMessages([]);
+  const deleteConversation = useCallback(
+    async (convId) => {
+      if (!convId) return;
+      if (deletingRef.current.has(convId)) {
+        // Prevent duplicate delete requests while one is in progress
+        return;
+      }
+
+      deletingRef.current.add(convId);
+      setDeletingConversationIds((prev) => new Set(prev).add(convId));
+      setError(null);
+
+      try {
+        await conversationApi.deleteConversation(convId);
+
+        // Remove from conversation list upon successful confirmation
+        setConversations((prev) => prev.filter((c) => c.id !== convId));
+
+        // If the deleted conversation was active, clear active state and return to new-chat state
+        if (activeConversationId === convId) {
+          setActiveConversationId(null);
+          setMessages([]);
+        }
+      } catch (err) {
+        const errorMsg = err.message || 'Failed to delete conversation from server.';
+        setError(errorMsg);
+        throw err;
+      } finally {
+        deletingRef.current.delete(convId);
+        setDeletingConversationIds((prev) => {
+          const next = new Set(prev);
+          next.delete(convId);
+          return next;
+        });
       }
     },
-    [activeConversationId, conversations]
+    [activeConversationId]
   );
 
   /**
@@ -196,10 +279,8 @@ export function ConversationProvider({ children }) {
 
       let convId = activeConversationId;
 
-      // 1. If no conversation is active, create one now
       if (!convId) {
         try {
-          // Generate a friendly initial title based on the question
           const initialTitle = trimmed.length > 45 ? `${trimmed.slice(0, 42)}...` : trimmed;
           convId = await startNewConversation(initialTitle);
         } catch (err) {
@@ -208,7 +289,6 @@ export function ConversationProvider({ children }) {
         }
       }
 
-      // 2. Optimistic user message rendering
       const tempUserMsgId = `temp-${Date.now()}`;
       const tempUserMessage = {
         id: tempUserMsgId,
@@ -224,7 +304,6 @@ export function ConversationProvider({ children }) {
       setMessages((prev) => [...prev, tempUserMessage]);
       setIsLoading(true);
 
-      // 3. Send message to backend
       try {
         const chatResponse = await conversationApi.sendMessage(convId, {
           question: trimmed,
@@ -233,7 +312,6 @@ export function ConversationProvider({ children }) {
           chat_type: chatType,
         });
 
-        // 4. Create assistant message object from real ChatResponse
         const assistantMessage = {
           id: chatResponse.assistant_message_id,
           conversation_id: chatResponse.conversation_id,
@@ -247,7 +325,6 @@ export function ConversationProvider({ children }) {
           created_at: chatResponse.created_at,
         };
 
-        // Update the temporary user message with real ID and append assistant answer
         setMessages((prev) => [
           ...prev.map((m) =>
             m.id === tempUserMsgId
@@ -257,7 +334,6 @@ export function ConversationProvider({ children }) {
           assistantMessage,
         ]);
 
-        // 5. Update local conversation title & timestamp if it was a default title
         setConversations((prev) =>
           prev.map((c) => {
             if (c.id === convId) {
@@ -278,15 +354,12 @@ export function ConversationProvider({ children }) {
           })
         );
       } catch (err) {
-        // Keep user message visible and show actionable error
         const errorMessage =
           err.message || 'An error occurred while generating the answer.';
         setError(errorMessage);
 
-        // Preserve question in inputPrompt so user does not lose their draft
         setInputPrompt(trimmed);
 
-        // Mark temporary user message as failed or leave visible with error state
         setMessages((prev) =>
           prev.map((m) =>
             m.id === tempUserMsgId ? { ...m, status: 'failed' } : m
@@ -303,6 +376,8 @@ export function ConversationProvider({ children }) {
 
   const value = {
     conversations,
+    isConversationsLoading,
+    conversationsError,
     activeConversationId,
     activeConversation,
     messages,
@@ -317,9 +392,12 @@ export function ConversationProvider({ children }) {
     setChatType,
     startNewConversation,
     selectConversation,
-    removeConversation,
+    deleteConversation,
+    removeConversation: deleteConversation,
+    deletingConversationIds,
     askQuestion,
     clearError: () => setError(null),
+    reloadConversations: () => loadConversations(activeConversationId),
     reloadHistory: () => activeConversationId && loadConversationHistory(activeConversationId),
   };
 

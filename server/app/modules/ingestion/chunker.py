@@ -1,10 +1,4 @@
 """Research paper section-aware chunking engine.
-
-This module provides deterministic, section-aware, paragraph-first chunking
-for preprocessed and section-detected research papers. It respects section boundaries,
-handles oversized paragraphs and sentences gracefully, supports configurable overlap,
-preserves source tracking (page spans, paragraph indices, section hierarchy), and
-maps directly to the PaperChunk schema.
 """
 
 from __future__ import annotations
@@ -21,10 +15,6 @@ from app.modules.ingestion.section_detector import (
 )
 
 
-# -------------------------------------------------------------------------
-# Token Counter Protocol & Implementations
-# -------------------------------------------------------------------------
-
 @runtime_checkable
 class TokenCounter(Protocol):
     """Protocol for counting tokens and splitting text to token limits."""
@@ -40,9 +30,6 @@ class TokenCounter(Protocol):
 
 class WhitespaceTokenCounter:
     """Deterministic token counter based on whitespace-separated words.
-
-    Useful for testing and baseline execution without downloading ML models.
-    Guarantees exact character and whitespace preservation when splitting.
     """
 
     @property
@@ -89,8 +76,6 @@ class WhitespaceTokenCounter:
 class CharacterTokenCounter:
     """Deterministic token counter based on character ratio (e.g. 4 chars per token).
 
-    Useful for tests verifying precise token boundaries and fractional lengths.
-    Guarantees exact character preservation when splitting.
     """
 
     def __init__(self, chars_per_token: int = 4) -> None:
@@ -126,8 +111,6 @@ class CharacterTokenCounter:
 class HuggingFaceTokenCounter:
     """Token counter adapter wrapping an already-loaded HuggingFace or transformers tokenizer.
 
-    Operates strictly offline without downloading models or accessing the network.
-    Accepts any pre-instantiated tokenizer object exposing `encode()` or `tokenize()`.
     """
 
     def __init__(self, tokenizer: Any) -> None:
@@ -245,20 +228,9 @@ class HuggingFaceTokenCounter:
         return pieces
 
 
-# -------------------------------------------------------------------------
-# Configuration
-# -------------------------------------------------------------------------
-
 @dataclass(frozen=True)
 class ChunkingConfig:
     """Configuration for research paper chunking engine.
-
-    Attributes:
-        target_chunk_size: Desired chunk size in tokens.
-        max_chunk_size: Hard upper bound for chunk size in tokens.
-        overlap: Target overlap in tokens between adjacent chunks within the same section.
-        min_chunk_size: Lower bound threshold below which non-final chunks are flagged.
-        chunking_version: Identifier for the chunking strategy and parameter version.
     """
 
     target_chunk_size: int = 200
@@ -291,24 +263,10 @@ class ChunkingConfig:
             )
 
 
-# -------------------------------------------------------------------------
-# Output Data Structures
-# -------------------------------------------------------------------------
-
 @dataclass(frozen=True)
 class ResearchChunk:
     """An immutable chunk of research paper text mapped to the database schema.
 
-    Attributes:
-        chunk_index: 0-indexed sequential position across the entire paper.
-        content: Text content of the chunk.
-        token_count: Number of tokens measured by the injected TokenCounter.
-        char_count: Number of characters in content string.
-        page_start: 1-indexed source starting page number.
-        page_end: 1-indexed source ending page number.
-        section_title: Title of enclosing section (or 'Preamble' / None).
-        content_hash: SHA-256 hexadecimal digest of content.
-        metadata: JSON-serializable dictionary with structural and provenance data.
     """
 
     chunk_index: int
@@ -325,14 +283,6 @@ class ResearchChunk:
 @dataclass
 class ChunkingDiagnostics:
     """Diagnostics and performance metrics for a chunking execution.
-
-    Attributes:
-        input_paragraph_count: Total non-empty paragraphs received across preamble and sections.
-        output_chunk_count: Total ResearchChunk instances generated.
-        sections_processed: Total logical sections processed (including preamble if present).
-        oversized_paragraphs_split: Count of paragraphs exceeding max_chunk_size that were split.
-        total_overlap_tokens: Sum of overlap tokens generated across all chunk transitions.
-        warnings: Quality and boundary warnings encountered during chunking.
     """
 
     input_paragraph_count: int
@@ -371,10 +321,6 @@ class ChunkingResult:
             raise ValueError("Text reconstruction requires overlap-free chunks (overlap=0).")
         return "".join(c.metadata.get("boundary_separator", "") + c.content for c in self.chunks)
 
-
-# -------------------------------------------------------------------------
-# Internal Fragment Representation & Boundary Logic
-# -------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class _TextUnit:
@@ -466,10 +412,6 @@ def _split_into_sentences(text: str) -> list[str]:
     return sentences if sentences else [text]
 
 
-# -------------------------------------------------------------------------
-# Research Chunking Engine
-# -------------------------------------------------------------------------
-
 class ResearchChunkingEngine:
     """Deterministic, section-aware chunking engine for research papers.
 
@@ -529,7 +471,6 @@ class ResearchChunkingEngine:
             1 for s in detection_result.sections for p in s.paragraphs if p.text and p.text.strip()
         )
 
-        # 1. Process Preamble as its own logical section
         if detection_result.preamble:
             preamble_chunks, splits, overlap_toks, warn = self._chunk_section_paragraphs(
                 paragraphs=detection_result.preamble,
@@ -548,7 +489,6 @@ class ResearchChunkingEngine:
             sections_processed_count += 1
             warnings.extend(warn)
 
-        # 2. Process each DetectedSection independently
         for sec in detection_result.sections:
             sec_chunks, splits, overlap_toks, warn = self._chunk_section_paragraphs(
                 paragraphs=sec.paragraphs,
@@ -568,7 +508,6 @@ class ResearchChunkingEngine:
             sections_processed_count += 1
             warnings.extend(warn)
 
-        # Assemble diagnostics
         diagnostics = ChunkingDiagnostics(
             input_paragraph_count=total_input_paragraphs,
             output_chunk_count=len(all_chunks),
@@ -579,10 +518,6 @@ class ResearchChunkingEngine:
         )
 
         return ChunkingResult(chunks=all_chunks, diagnostics=diagnostics)
-
-    # -------------------------------------------------------------------------
-    # Internal Section Chunking Logic
-    # -------------------------------------------------------------------------
 
     def _chunk_section_paragraphs(
         self,
@@ -605,7 +540,6 @@ class ResearchChunkingEngine:
         if not paragraphs:
             return chunks, splits_count, overlap_tokens_count, warnings
 
-        # Step A: Convert paragraphs into atomic units (splitting oversized ones)
         units: list[_TextUnit] = []
         for p in paragraphs:
             text = p.text
@@ -631,7 +565,6 @@ class ResearchChunkingEngine:
         if not units:
             return chunks, splits_count, overlap_tokens_count, warnings
 
-        # Step B: Group units into chunks with section-bounded overlap
         unit_idx = 0
         n_units = len(units)
         chunk_idx_in_sec = 0
@@ -646,14 +579,12 @@ class ResearchChunkingEngine:
 
             next_unit = units[unit_idx]
 
-            # If overlap + next_unit exceeds max_chunk_size, trim overlap from front
             while current_overlap_units:
                 candidate_text = _render_units_text(current_overlap_units + [next_unit])
                 if self.token_counter.count_tokens(candidate_text) <= self.config.max_chunk_size:
                     break
                 current_overlap_units.pop(0)
 
-            # Recalculate actual overlap tokens after trimming
             if current_overlap_units:
                 actual_overlap_tokens = self.token_counter.count_tokens(
                     _render_units_text(current_overlap_units)
@@ -668,7 +599,6 @@ class ResearchChunkingEngine:
             unit_idx += 1
             current_tokens = self.token_counter.count_tokens(_render_units_text(current_units))
 
-            # Add more new units if possible and below target_chunk_size
             while unit_idx < n_units and current_tokens < self.config.target_chunk_size:
                 candidate_units = current_units + [units[unit_idx]]
                 candidate_tokens = self.token_counter.count_tokens(

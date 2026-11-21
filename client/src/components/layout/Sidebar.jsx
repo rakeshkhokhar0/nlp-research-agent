@@ -24,12 +24,32 @@ function formatDateLabel(isoString) {
 export default function Sidebar({ isOpen, onClose, activeView = 'chat', onSelectView }) {
   const {
     conversations,
+    isConversationsLoading,
+    conversationsError,
+    reloadConversations,
     activeConversationId,
     selectConversation,
     startNewConversation,
+    deleteConversation,
     removeConversation,
+    deletingConversationIds,
     isLoading,
   } = useConversation();
+
+  const [deleteError, setDeleteError] = React.useState(null);
+
+  const handleDelete = async (e, convId) => {
+    e.stopPropagation();
+    if (deletingConversationIds?.has(convId)) return;
+
+    setDeleteError(null);
+    try {
+      const fn = deleteConversation || removeConversation;
+      await fn(convId);
+    } catch (err) {
+      setDeleteError(err.message || 'Failed to delete conversation.');
+    }
+  };
 
   const handleSelect = (convId) => {
     if (onSelectView) onSelectView('chat');
@@ -146,7 +166,43 @@ export default function Sidebar({ isOpen, onClose, activeView = 'chat', onSelect
             <span className="font-mono text-slate-400">{conversations.length}</span>
           </div>
 
-          {conversations.length === 0 ? (
+          {deleteError && (
+            <div className="mx-1 mb-2 p-2 rounded-lg bg-rose-50 border border-rose-200 text-[11px] text-rose-700 flex items-center justify-between animate-fade-in">
+              <span className="truncate pr-1">{deleteError}</span>
+              <button
+                type="button"
+                onClick={() => setDeleteError(null)}
+                className="text-rose-500 hover:text-rose-700 font-bold px-1 rounded cursor-pointer shrink-0"
+                aria-label="Dismiss error"
+              >
+                ×
+              </button>
+            </div>
+          )}
+
+          {isConversationsLoading && conversations.length === 0 ? (
+            /* Loading State */
+            <div className="px-3 py-8 text-center text-slate-400">
+              <div className="w-5 h-5 mx-auto mb-2 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+              <p className="text-xs font-medium text-slate-600">Loading conversations...</p>
+            </div>
+          ) : conversationsError && conversations.length === 0 ? (
+            /* Error State */
+            <div className="px-3 py-6 text-center text-slate-500">
+              <svg className="w-6 h-6 mx-auto mb-2 text-rose-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <p className="text-xs font-medium text-slate-700 mb-1">Failed to load history</p>
+              <p className="text-[11px] text-slate-400 mb-3 line-clamp-2">{conversationsError}</p>
+              <button
+                type="button"
+                onClick={reloadConversations}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition-colors cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
+          ) : conversations.length === 0 ? (
             /* Empty State */
             <div className="px-3 py-8 text-center text-slate-400">
               <svg className="w-8 h-8 mx-auto mb-2 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -189,19 +245,26 @@ export default function Sidebar({ isOpen, onClose, activeView = 'chat', onSelect
                       </p>
                     </div>
 
-                    {/* Delete conversation from local history */}
+                    {/* Delete conversation action */}
                     <button
                       type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeConversation(conv.id);
-                      }}
-                      title="Remove from history"
-                      className="absolute right-2 p-1 rounded text-slate-400 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100 cursor-pointer"
+                      disabled={deletingConversationIds?.has(conv.id)}
+                      onClick={(e) => handleDelete(e, conv.id)}
+                      title={deletingConversationIds?.has(conv.id) ? "Deleting chat..." : "Delete chat"}
+                      className={`absolute right-2 p-1 rounded text-slate-400 hover:text-rose-600 transition-opacity focus:opacity-100 cursor-pointer ${
+                        deletingConversationIds?.has(conv.id)
+                          ? 'opacity-100 cursor-not-allowed text-rose-500'
+                          : 'opacity-0 group-hover:opacity-100'
+                      }`}
+                      aria-label="Delete chat"
                     >
-                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
+                      {deletingConversationIds?.has(conv.id) ? (
+                        <div className="w-3.5 h-3.5 border-2 border-rose-500 border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      )}
                     </button>
                   </div>
                 );

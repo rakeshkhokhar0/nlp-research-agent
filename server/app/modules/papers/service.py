@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+import logging
 from typing import Any
 import uuid
 
+from app.core.exceptions import ActiveJobConflictError
 from app.modules.ingestion.models import IngestionJob
-from app.modules.ingestion.storage import CloudinaryUploadResult
+from app.modules.ingestion.storage import CloudinaryStorage, CloudinaryUploadResult
 from app.modules.papers.models import Paper, PaperFile, normalize_doi
 from app.modules.papers.repository import (
     REUSABLE_FILE_STATUSES,
+    PaperNotFoundError,
     PaperRepository,
     PaperRepositoryError,
     PaperValidationError,
@@ -23,11 +26,11 @@ from app.modules.papers.schemas import (
     PaperListItemResponse,
     PaperListResponse,
 )
+from app.modules.retrieval.repository import RetrievalRepository
+from app.modules.retrieval.service import RetrievalService
 
+logger = logging.getLogger(__name__)
 
-# -------------------------------------------------------------------------
-# Service Exceptions Hierarchy
-# -------------------------------------------------------------------------
 
 class PaperServiceError(Exception):
     """Base exception for paper service errors."""
@@ -36,10 +39,6 @@ class PaperServiceError(Exception):
 class PaperConflictError(PaperServiceError):
     """Raised when DOI lookup and checksum lookup point to two different existing papers."""
 
-
-# -------------------------------------------------------------------------
-# Result Containers
-# -------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class PaperResolutionResult:
@@ -58,10 +57,6 @@ class PaperResolutionResult:
     file_reused: bool
 
 
-# -------------------------------------------------------------------------
-# Paper Service
-# -------------------------------------------------------------------------
-
 class PaperService:
     """Coordinates research paper business rules, resolution, deduplication, and file registration.
 
@@ -69,11 +64,18 @@ class PaperService:
     Does not initiate database commits, rollbacks, or storage uploads/downloads.
     """
 
-    def __init__(self, repository: PaperRepository) -> None:
-        """Initialize the PaperService with an injected PaperRepository.
+    def __init__(
+        self,
+        repository: PaperRepository,
+        retrieval_service: RetrievalService | None = None,
+        storage: CloudinaryStorage | None = None,
+    ) -> None:
+        """Initialize the PaperService with an injected PaperRepository, optional RetrievalService, and Storage.
 
         Args:
             repository: Active PaperRepository bound to a database session.
+            retrieval_service: Optional application-scoped RetrievalService for index refreshing.
+            storage: Optional CloudinaryStorage client for asset cleanup.
 
         Raises:
             TypeError: If repository is not a PaperRepository instance.
@@ -83,6 +85,8 @@ class PaperService:
                 f"repository must be a PaperRepository instance, got {type(repository).__name__}"
             )
         self.repository: PaperRepository = repository
+        self.retrieval_service: RetrievalService | None = retrieval_service
+        self.storage: CloudinaryStorage = storage if storage is not None else CloudinaryStorage()
 
     async def resolve_or_create_paper(
         self,
@@ -146,12 +150,10 @@ class PaperService:
         cleaned_doi = normalize_doi(doi)
         cleaned_checksum = validate_and_normalize_sha256(checksum_sha256)
 
-        # 1. Lookup by DOI
         paper_by_doi: Paper | None = None
         if cleaned_doi is not None:
             paper_by_doi = await self.repository.get_by_doi(cleaned_doi)
 
-        # 2. Lookup by Checksum
         checksum_match: tuple[Paper, PaperFile] | None = None
         if cleaned_checksum is not None:
             checksum_match = await self.repository.get_by_checksum(cleaned_checksum)
@@ -159,7 +161,6 @@ class PaperService:
         paper_by_checksum = checksum_match[0] if checksum_match else None
         file_by_checksum = checksum_match[1] if checksum_match else None
 
-        # 3. Conflict Detection: DOI points to Paper A, checksum points to Paper B
         if (
             paper_by_doi is not None
             and paper_by_checksum is not None
@@ -170,21 +171,17 @@ class PaperService:
                 f"but checksum '{cleaned_checksum}' matches paper {paper_by_checksum.id} ('{paper_by_checksum.title}')."
             )
 
-        # Helper to determine if a matched file is eligible for reuse
         def get_reusable_file(pf: PaperFile | None) -> PaperFile | None:
             if pf is not None and pf.status in REUSABLE_FILE_STATUSES:
                 return pf
             return None
 
-        # 4. Resolve Paper
         if paper_by_doi is not None:
-            # Case A: Paper found via DOI
             paper = paper_by_doi
             matching_file = get_reusable_file(file_by_checksum) if (file_by_checksum and file_by_checksum.paper_id == paper.id) else None
             paper_reused = True
             file_reused = matching_file is not None
 
-            # Enrich missing metadata
             await self._enrich_metadata_if_missing(
                 paper=paper,
                 title=title,
@@ -209,13 +206,11 @@ class PaperService:
             )
 
         elif paper_by_checksum is not None:
-            # Case B: No DOI match (or no DOI provided), but matching file checksum found
             paper = paper_by_checksum
             matching_file = get_reusable_file(file_by_checksum)
             paper_reused = True
             file_reused = matching_file is not None
 
-            # Enrich missing metadata on the checksum-associated paper
             await self._enrich_metadata_if_missing(
                 paper=paper,
                 title=title,
@@ -240,7 +235,6 @@ class PaperService:
             )
 
         else:
-            # Case C: Neither DOI nor checksum matched -> create a new Paper
             if not isinstance(title, str) or not title.strip():
                 raise PaperValidationError(
                     f"Cannot create a new Paper without a non-empty string title, got {title!r} ({type(title).__name__})."
@@ -409,6 +403,59 @@ class PaperService:
             return None
         paper, chunk_cnt, max_p = result
         return build_paper_detail(paper, chunk_cnt, max_p)
+
+    async def delete_paper(self, paper_id: uuid.UUID) -> None:
+        """Permanently delete a research paper, associated data, index chunks, and Cloudinary storage file.
+
+        Args:
+            paper_id: UUID of the research paper to delete.
+
+        Raises:
+            PaperNotFoundError: If the paper does not exist.
+            ActiveJobConflictError: If the paper is currently undergoing active ingestion.
+        """
+        deleted, storage_keys = await self.repository.delete_paper(paper_id)
+        if not deleted:
+            raise PaperNotFoundError(f"Research paper with id '{paper_id}' not found.")
+
+        await self.repository.session.commit()
+        logger.info("Successfully deleted paper %s and associated database records.", paper_id)
+
+        if self.retrieval_service is not None:
+            try:
+                retrieval_repo = RetrievalRepository(self.repository.session)
+                await self.retrieval_service.refresh_index(retrieval_repo)
+                logger.info("Refreshed lexical retrieval index after deleting paper %s.", paper_id)
+            except Exception as exc:
+                logger.error(
+                    "Failed to refresh lexical retrieval index after paper %s deletion: %s",
+                    paper_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        storage_failures = []
+        for key in storage_keys:
+            try:
+                self.storage.delete_file(key)
+                logger.info("Deleted Cloudinary storage asset '%s' for paper %s.", key, paper_id)
+            except Exception as exc:
+                logger.error(
+                    "Failed to delete Cloudinary storage asset '%s' for paper %s: %s",
+                    key,
+                    paper_id,
+                    exc,
+                    exc_info=True,
+                )
+                storage_failures.append((key, str(exc)))
+
+        if storage_failures:
+            logger.warning(
+                "Paper %s database records deleted, but %d Cloudinary file(s) failed cleanup: %s",
+                paper_id,
+                len(storage_failures),
+                storage_failures,
+            )
 
 
 def build_paper_list_item(

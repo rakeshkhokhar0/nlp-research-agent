@@ -22,6 +22,27 @@ export async function createConversation(title = null, metadata = null) {
 }
 
 /**
+ * Retrieves all conversations from the backend ordered by most recent activity.
+ *
+ * @param {object} [options={}] - Query options
+ * @param {number} [options.limit=50] - Maximum number of conversations to retrieve
+ * @param {number} [options.offset=0] - Number of conversations to skip
+ * @param {string|null} [options.status='active'] - Status filter ('active', 'archived')
+ * @returns {Promise<Array<import('./types').ConversationResponse>>} List of conversations
+ */
+export async function listConversations({ limit = 50, offset = 0, status = 'active' } = {}) {
+  const params = {
+    limit: Math.max(1, Math.min(Number(limit) || 50, 100)),
+    offset: Math.max(0, Number(offset) || 0),
+  };
+  if (status) {
+    params.status = status;
+  }
+  const response = await apiClient.get('/conversations', { params });
+  return Array.isArray(response.data) ? response.data : (response.data?.items || []);
+}
+
+/**
  * Retrieves metadata for a specific conversation by UUID.
  *
  * @param {string} conversationId - UUID of the conversation
@@ -33,6 +54,19 @@ export async function getConversation(conversationId) {
   }
   const response = await apiClient.get(`/conversations/${conversationId}`);
   return response.data;
+}
+
+/**
+ * Permanently deletes a conversation by UUID on the backend.
+ *
+ * @param {string} conversationId - UUID of the conversation
+ * @returns {Promise<void>}
+ */
+export async function deleteConversation(conversationId) {
+  if (!conversationId) {
+    throw new Error('conversationId is required');
+  }
+  await apiClient.delete(`/conversations/${conversationId}`);
 }
 
 /**

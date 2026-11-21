@@ -31,7 +31,9 @@ from app.modules.conversation.service import (
 def mock_conversation_service() -> MagicMock:
     service = MagicMock(spec=ConversationService)
     service.create_conversation = AsyncMock()
+    service.list_conversations = AsyncMock()
     service.get_conversation = AsyncMock()
+    service.delete_conversation = AsyncMock()
     service.get_conversation_history = AsyncMock()
     service.ask_question = AsyncMock()
     return service
@@ -109,6 +111,125 @@ def test_get_conversation_not_found(
 
     response = client.get(f"/api/v1/conversations/{conv_id}")
     assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_list_conversations_endpoint(
+    client: TestClient, mock_conversation_service: MagicMock
+) -> None:
+    """Verify GET /api/v1/conversations returns list of conversations with query parameters."""
+    conv1_id = uuid.uuid4()
+    conv2_id = uuid.uuid4()
+    now = datetime(2026, 11, 14, 12, 0, 0, tzinfo=timezone.utc)
+
+    mock_conversation_service.list_conversations.return_value = [
+        ConversationResponse(
+            id=conv1_id,
+            title="Chat 1",
+            status="active",
+            chat_type="paper",
+            created_at=now,
+            updated_at=None,
+            last_message_at=now,
+        ),
+        ConversationResponse(
+            id=conv2_id,
+            title="Chat 2",
+            status="active",
+            chat_type="general",
+            created_at=now,
+            updated_at=None,
+            last_message_at=None,
+        ),
+    ]
+
+    response = client.get("/api/v1/conversations?limit=25&offset=5&status=active")
+
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert len(data) == 2
+    assert data[0]["id"] == str(conv1_id)
+    assert data[0]["chat_type"] == "paper"
+    assert data[1]["id"] == str(conv2_id)
+    assert data[1]["chat_type"] == "general"
+    mock_conversation_service.list_conversations.assert_awaited_once_with(
+        limit=25,
+        offset=5,
+        status="active",
+    )
+
+
+def test_list_conversations_empty_endpoint(
+    client: TestClient, mock_conversation_service: MagicMock
+) -> None:
+    """Verify GET /api/v1/conversations returns empty list when no conversations exist."""
+    mock_conversation_service.list_conversations.return_value = []
+
+    response = client.get("/api/v1/conversations")
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == []
+    mock_conversation_service.list_conversations.assert_awaited_once_with(
+        limit=50,
+        offset=0,
+        status="active",
+    )
+
+
+# -----------------------------------------------------------------------------
+# DELETE /api/v1/conversations/{id} Tests
+# -----------------------------------------------------------------------------
+
+
+def test_delete_conversation_endpoint_success_returns_204(
+    client: TestClient, mock_conversation_service: MagicMock
+) -> None:
+    """Verify DELETE /api/v1/conversations/{id} returns 204 No Content upon deletion."""
+    conv_id = uuid.uuid4()
+    mock_conversation_service.delete_conversation.return_value = None
+
+    response = client.delete(f"/api/v1/conversations/{conv_id}")
+
+    assert response.status_code == status.HTTP_204_NO_CONTENT
+    assert response.text == ""
+    mock_conversation_service.delete_conversation.assert_awaited_once_with(conv_id)
+
+
+def test_delete_conversation_endpoint_not_found_returns_404(
+    client: TestClient, mock_conversation_service: MagicMock
+) -> None:
+    """Verify DELETE /api/v1/conversations/{id} returns 404 when conversation does not exist."""
+    conv_id = uuid.uuid4()
+    mock_conversation_service.delete_conversation.side_effect = ConversationNotFoundError(
+        f"Conversation '{conv_id}' not found."
+    )
+
+    response = client.delete(f"/api/v1/conversations/{conv_id}")
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+    assert f"Conversation '{conv_id}' not found" in response.json()["detail"]
+
+
+def test_delete_conversation_endpoint_invalid_uuid_returns_422(
+    client: TestClient, mock_conversation_service: MagicMock
+) -> None:
+    """Verify DELETE /api/v1/conversations/{id} returns 422 for malformed UUID string."""
+    response = client.delete("/api/v1/conversations/not-a-valid-uuid")
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    mock_conversation_service.delete_conversation.assert_not_called()
+
+
+def test_delete_conversation_endpoint_server_error_returns_500(
+    client: TestClient, mock_conversation_service: MagicMock
+) -> None:
+    """Verify DELETE /api/v1/conversations/{id} returns 500 when database error occurs."""
+    conv_id = uuid.uuid4()
+    mock_conversation_service.delete_conversation.side_effect = RuntimeError("Database deadlocked")
+
+    response = client.delete(f"/api/v1/conversations/{conv_id}")
+
+    assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert "unexpected error occurred" in response.json()["detail"].lower()
 
 
 # -----------------------------------------------------------------------------

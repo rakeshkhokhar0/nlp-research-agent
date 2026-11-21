@@ -153,7 +153,6 @@ class ResearchTextPreprocessor:
 
         warnings: list[str] = []
 
-        # Stage A: Normalize line endings per page
         stage_a_texts: list[str] = []
         for p in parsed_paper.pages:
             orig = p.text
@@ -161,10 +160,8 @@ class ResearchTextPreprocessor:
                 warnings.append(f"Page {p.page_number} contains no text.")
             stage_a_texts.append(self._normalize_line_endings(orig))
 
-        # Stage B: Detect and remove repeated headers and footers across pages
         stage_b_texts, removed_repeated_lines = self._remove_repeated_headers_footers(stage_a_texts)
 
-        # Stages C, D, E: Per-page line dehyphenation, whitespace normalization, and paragraph reconstruction
         preprocessed_pages: list[PreprocessedPage] = []
         modified_pages_count = 0
 
@@ -173,7 +170,6 @@ class ResearchTextPreprocessor:
             raw_page_text = stage_b_texts[idx]
 
             if not raw_page_text.strip():
-                # Preserve genuinely empty pages
                 preprocessed_pages.append(
                     PreprocessedPage(
                         page_number=p.page_number,
@@ -186,13 +182,8 @@ class ResearchTextPreprocessor:
                     modified_pages_count += 1
                 continue
 
-            # Stage C: Correct line-break hyphenation
             dehyphenated_text = self._dehyphenate_text(raw_page_text)
-
-            # Stage D: Normalize whitespace
             whitespace_normalized = self._normalize_whitespace(dehyphenated_text)
-
-            # Stage E: Reconstruct paragraphs
             cleaned_text, paragraphs = self._reconstruct_paragraphs(whitespace_normalized)
 
             if cleaned_text != original_text:
@@ -224,17 +215,9 @@ class ResearchTextPreprocessor:
             diagnostics=diagnostics,
         )
 
-    # -------------------------------------------------------------------------
-    # Stage A: Line Endings
-    # -------------------------------------------------------------------------
-
     def _normalize_line_endings(self, text: str) -> str:
         """Convert CRLF and CR to standard LF newlines."""
         return text.replace("\r\n", "\n").replace("\r", "\n")
-
-    # -------------------------------------------------------------------------
-    # Stage B: Repeated Headers & Footers
-    # -------------------------------------------------------------------------
 
     def _remove_repeated_headers_footers(
         self,
@@ -352,10 +335,6 @@ class ResearchTextPreprocessor:
             return False
 
         return True
-
-    # -------------------------------------------------------------------------
-    # Stage C: Correct Line-Break Hyphenation
-    # -------------------------------------------------------------------------
 
     def _dehyphenate_text(self, text: str) -> str:
         """Correct line-break hyphenation within page text.
@@ -477,27 +456,13 @@ class ResearchTextPreprocessor:
 
         return False
 
-    # -------------------------------------------------------------------------
-    # Stage D: Normalize Whitespace
-    # -------------------------------------------------------------------------
-
     def _normalize_whitespace(self, text: str) -> str:
         """Collapse redundant horizontal spaces and reduce excessive blank lines."""
-        # 1. Collapse multiple spaces and tabs to a single space
         text = re.sub(r"[ \t]+", " ", text)
-
-        # 2. Strip leading/trailing space from individual lines
         lines = [line.strip() for line in text.split("\n")]
         text = "\n".join(lines)
-
-        # 3. Collapse 3 or more consecutive newlines into 2 (standard paragraph break)
         text = re.sub(r"\n{3,}", "\n\n", text)
-
         return text.strip()
-
-    # -------------------------------------------------------------------------
-    # Stage E: Reconstruct Paragraphs
-    # -------------------------------------------------------------------------
 
     def _reconstruct_paragraphs(self, text: str) -> tuple[str, list[str]]:
         """Reconstruct running paragraphs from PDF line-wrapping.
@@ -603,10 +568,6 @@ class ResearchTextPreprocessor:
             or self._is_equation_or_math(line)
             or self._is_table_or_structure(line)
         )
-
-    # -------------------------------------------------------------------------
-    # Element Classification Helpers
-    # -------------------------------------------------------------------------
 
     def _is_section_heading(self, line: str) -> bool:
         """Check if line is a standard or numbered academic section heading."""

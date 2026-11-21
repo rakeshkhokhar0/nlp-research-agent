@@ -172,6 +172,31 @@ class ConversationService:
                 last_message_at=conv.last_message_at,
             )
 
+    async def list_conversations(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = "active",
+    ) -> list[ConversationResponse]:
+        """Retrieve conversations ordered by most recent activity.
+        """
+        async with self.session_factory() as session:
+            repo = ConversationRepository(session)
+            conversations = await repo.list_conversations(limit=limit, offset=offset, status=status)
+            return [
+                ConversationResponse(
+                    id=conv.id,
+                    title=conv.title,
+                    status=conv.status,
+                    chat_type=(conv.metadata_ or {}).get("chat_type", "paper"),
+                    context_summary=conv.context_summary,
+                    created_at=conv.created_at,
+                    updated_at=conv.updated_at,
+                    last_message_at=conv.last_message_at,
+                )
+                for conv in conversations
+            ]
+
     async def get_conversation(self, conversation_id: uuid.UUID) -> ConversationResponse:
         """Retrieve conversation metadata by ID."""
         async with self.session_factory() as session:
@@ -190,6 +215,25 @@ class ConversationService:
                 created_at=conv.created_at,
                 updated_at=conv.updated_at,
                 last_message_at=conv.last_message_at,
+            )
+
+    async def delete_conversation(self, conversation_id: uuid.UUID) -> None:
+        """Permanently delete a conversation and its cascaded messages and citations.
+        """
+        async with self.session_factory() as session:
+            async with session.begin():
+                repo = ConversationRepository(session)
+                deleted = await repo.delete_conversation(conversation_id)
+                if not deleted:
+                    raise ConversationNotFoundError(
+                        f"Conversation '{conversation_id}' not found."
+                    )
+
+            log_event(
+                logger,
+                logging.INFO,
+                "conversation_deleted",
+                conversation_id=str(conversation_id),
             )
 
     async def get_conversation_history(
@@ -259,9 +303,6 @@ class ConversationService:
     ) -> ChatResponse:
         """Process a user question against context management, retrieval (if paper chat), and LLM.
 
-        Supports two chat types:
-        1. 'general': Context-aware general conversation without retrieval.
-        2. 'paper': Grounded research paper question answering with custom lexical retrieval.
         """
         if not question or not question.strip():
             raise ValueError("question must not be empty or whitespace.")
@@ -271,7 +312,6 @@ class ConversationService:
         with correlation_context(conversation_id=str(conversation_id)):
             current_req_id = get_correlation_ids().get("request_id") or str(uuid.uuid4())
 
-            # 1. Validate conversation exists and is active, and build context
             async with self.session_factory() as session:
                 repo = ConversationRepository(session)
                 conv = await repo.get_conversation(conversation_id)
@@ -282,7 +322,6 @@ class ConversationService:
                         f"Conversation '{conversation_id}' is not active (status='{conv.status}')."
                     )
 
-                # Determine effective chat type and enforce conversation consistency
                 conv_metadata = dict(conv.metadata_ or {})
                 locked_type = conv_metadata.get("chat_type")
 
@@ -299,10 +338,8 @@ class ConversationService:
                     conv.metadata_ = conv_metadata
                     await session.flush()
 
-                # Summarize older messages if history exceeds threshold
                 await self.context_manager.maybe_summarize_history(conversation=conv, repo=repo)
 
-                # Build context (recent history + summary + current question token budgeting)
                 context = await self.context_manager.build_context(
                     conversation_id=conversation_id,
                     repo=repo,
@@ -313,7 +350,6 @@ class ConversationService:
 
                 await session.commit()
 
-            # 2. General Chat Workflow (no retrieval invoked)
             if effective_chat_type == "general":
                 return await self._handle_general_chat(
                     conversation_id=conversation_id,
@@ -323,7 +359,6 @@ class ConversationService:
                     current_req_id=current_req_id,
                 )
 
-            # 3. Chat with Paper Workflow (grounded retrieval + citations)
             return await self._handle_paper_chat(
                 conversation_id=conversation_id,
                 clean_question=clean_question,
@@ -353,7 +388,6 @@ class ConversationService:
             history_length=len(context.history_messages),
         )
 
-        # 1. Save user message in short transaction
         async with self.session_factory() as session:
             async with session.begin():
                 repo = ConversationRepository(session)
@@ -371,7 +405,6 @@ class ConversationService:
 
         user_message_id = user_msg.id
 
-        # 2. LLM general answer generation (no retrieval)
         llm_start = time.perf_counter()
         try:
             llm_result = await self.llm_client.generate_general_answer(
@@ -387,7 +420,6 @@ class ConversationService:
 
         llm_duration_ms = (time.perf_counter() - llm_start) * 1000.0
 
-        # 3. Save assistant message
         async with self.session_factory() as session:
             async with session.begin():
                 repo = ConversationRepository(session)
@@ -441,7 +473,6 @@ class ConversationService:
         current_req_id: str,
     ) -> ChatResponse:
         """Handle grounded research Chat with Paper using retrieval and citation validation."""
-        # 1. Check for basic conversational greetings (no retrieval or LLM required)
         if is_greeting(clean_question):
             log_event(
                 logger,
@@ -488,7 +519,6 @@ class ConversationService:
                 created_at=asst_msg.created_at or datetime.now(timezone.utc),
             )
 
-        # 2. Check for unsupported non-research questions (general knowledge, coding, chitchat)
         if is_unsupported_scope(clean_question):
             log_event(
                 logger,
@@ -535,7 +565,6 @@ class ConversationService:
                 created_at=asst_msg.created_at or datetime.now(timezone.utc),
             )
 
-        # 3. Verify retrieval service availability and retrieve relevant chunks
         if self.retrieval_service is None or not self.retrieval_service.is_initialized:
             logger.error("RetrievalService is unavailable or uninitialized.")
             raise RetrievalUnavailableError(
@@ -567,7 +596,6 @@ class ConversationService:
             retrieval_duration_ms=round(retrieval_duration_ms, 2),
         )
 
-        # 4. Handle empty retrieval results without calling OpenAI
         if not retrieved_chunks:
             log_event(
                 logger,
@@ -614,7 +642,6 @@ class ConversationService:
                 created_at=asst_msg.created_at or datetime.now(timezone.utc),
             )
 
-        # 5. Save user message in a short database transaction
         async with self.session_factory() as session:
             async with session.begin():
                 repo = ConversationRepository(session)
@@ -632,8 +659,7 @@ class ConversationService:
 
         user_message_id = user_msg.id
 
-        # 6. LLM answer generation outside any database transaction
-        # Evidence chunks are separate factual evidence; summary is for context only
+        # Evidence chunks are factual evidence; summary is conversation context
         llm_start = time.perf_counter()
         try:
             llm_result = await self.llm_client.generate_grounded_answer(
@@ -651,7 +677,6 @@ class ConversationService:
 
         llm_duration_ms = (time.perf_counter() - llm_start) * 1000.0
 
-        # 7. Validate cited chunk IDs and fetch page information
         retrieved_map = {c.chunk_id: c for c in retrieved_chunks}
         validated_chunk_ids: list[uuid.UUID] = []
         seen_ids: set[uuid.UUID] = set()
@@ -678,12 +703,11 @@ class ConversationService:
             validated_citations_count=len(validated_chunk_ids),
         )
 
-        # Look up page numbers from database for validated citations
         async with self.session_factory() as session:
             repo = ConversationRepository(session)
             page_info = await repo.get_chunk_page_information(validated_chunk_ids)
 
-        # 8. Save assistant response and validated citations in a short transaction
+        # Save assistant response and citations
         citations_response: list[CitationResponse] = []
         async with self.session_factory() as session:
             async with session.begin():

@@ -212,3 +212,115 @@ test('conversationApi - getConversationHistory sends GET /conversations/{id}/mes
   assert.equal(history[0].role, 'user');
   assert.equal(history[1].role, 'assistant');
 });
+
+test('conversationApi - listConversations sends GET /conversations with query params', async (t) => {
+  const originalGet = apiClient.get;
+  let interceptedUrl = null;
+  let interceptedConfig = null;
+
+  apiClient.get = async (url, config) => {
+    interceptedUrl = url;
+    interceptedConfig = config;
+    return {
+      data: [
+        {
+          id: 'conv-1',
+          title: 'Paper Chat',
+          chat_type: 'paper',
+          status: 'active',
+          created_at: '2026-11-15T00:00:00Z',
+          last_message_at: '2026-11-15T01:00:00Z',
+        },
+        {
+          id: 'conv-2',
+          title: 'General Chat',
+          chat_type: 'general',
+          status: 'active',
+          created_at: '2026-11-14T00:00:00Z',
+          last_message_at: null,
+        },
+      ],
+    };
+  };
+
+  t.after(() => {
+    apiClient.get = originalGet;
+  });
+
+  const list = await conversationApi.listConversations({ limit: 20, offset: 5, status: 'active' });
+
+  assert.equal(interceptedUrl, '/conversations');
+  assert.deepEqual(interceptedConfig, {
+    params: { limit: 20, offset: 5, status: 'active' },
+  });
+  assert.equal(list.length, 2);
+  assert.equal(list[0].id, 'conv-1');
+  assert.equal(list[0].chat_type, 'paper');
+  assert.equal(list[1].chat_type, 'general');
+});
+
+test('conversationApi - listConversations returns empty array when response data is not an array', async (t) => {
+  const originalGet = apiClient.get;
+
+  apiClient.get = async () => ({
+    data: null,
+  });
+
+  t.after(() => {
+    apiClient.get = originalGet;
+  });
+
+  const list = await conversationApi.listConversations();
+  assert.deepEqual(list, []);
+});
+
+test('conversationApi - deleteConversation sends DELETE /conversations/{id}', async (t) => {
+  const originalDelete = apiClient.delete;
+  let interceptedUrl = null;
+
+  apiClient.delete = async (url) => {
+    interceptedUrl = url;
+    return { data: null, status: 204 };
+  };
+
+  t.after(() => {
+    apiClient.delete = originalDelete;
+  });
+
+  await conversationApi.deleteConversation('conv-delete-123');
+  assert.equal(interceptedUrl, '/conversations/conv-delete-123');
+});
+
+test('conversationApi - deleteConversation rejects missing conversationId without network call', async () => {
+  await assert.rejects(
+    async () => {
+      await conversationApi.deleteConversation('');
+    },
+    {
+      message: 'conversationId is required',
+    }
+  );
+});
+
+test('conversationApi - deleteConversation propagates network/server error when backend fails', async (t) => {
+  const originalDelete = apiClient.delete;
+
+  apiClient.delete = async () => {
+    const error = new Error('Not Found');
+    error.status = 404;
+    throw error;
+  };
+
+  t.after(() => {
+    apiClient.delete = originalDelete;
+  });
+
+  await assert.rejects(
+    async () => {
+      await conversationApi.deleteConversation('conv-missing');
+    },
+    {
+      message: 'Not Found',
+    }
+  );
+});

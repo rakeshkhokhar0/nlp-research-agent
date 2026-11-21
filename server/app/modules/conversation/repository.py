@@ -20,12 +20,6 @@ class ConversationRepositoryError(Exception):
 
 
 class ConversationRepository:
-    """Repository managing persistence for conversations, messages, and citations.
-
-    Maintains transactional purity by delegating commit and rollback boundaries
-    to the service layer while executing explicit flushes when database-generated
-    IDs and constraints require immediate synchronization.
-    """
 
     def __init__(self, session: AsyncSession) -> None:
         """Initialize repository with an active asynchronous database session.
@@ -47,15 +41,6 @@ class ConversationRepository:
         title: str | None = None,
         metadata_: dict[str, Any] | None = None,
     ) -> Conversation:
-        """Create and flush a new Conversation record.
-
-        Args:
-            title: Optional title for the research conversation.
-            metadata_: Optional JSONB metadata dictionary.
-
-        Returns:
-            The newly created and flushed Conversation instance.
-        """
         conversation = Conversation(
             title=title.strip() if title and title.strip() else None,
             status="active",
@@ -70,16 +55,6 @@ class ConversationRepository:
         conversation_id: uuid.UUID,
         for_update: bool = False,
     ) -> Conversation | None:
-        """Retrieve a Conversation by primary key UUID.
-
-        Args:
-            conversation_id: UUID of the target conversation.
-            for_update: If True, locks the row with SELECT FOR UPDATE to prevent
-                concurrent sequence number races.
-
-        Returns:
-            The Conversation instance if found, or None.
-        """
         if not isinstance(conversation_id, uuid.UUID):
             raise TypeError(
                 f"conversation_id must be a uuid.UUID, got {type(conversation_id).__name__}"
@@ -92,22 +67,47 @@ class ConversationRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def delete_conversation(self, conversation_id: uuid.UUID) -> bool:
+        if not isinstance(conversation_id, uuid.UUID):
+            raise TypeError(
+                f"conversation_id must be a uuid.UUID, got {type(conversation_id).__name__}"
+            )
+
+        conversation = await self.get_conversation(conversation_id, for_update=True)
+        if conversation is None:
+            return False
+
+        await self.session.delete(conversation)
+        await self.session.flush()
+        return True
+
+    async def list_conversations(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = "active",
+    ) -> list[Conversation]:
+        stmt = select(Conversation)
+        if status is not None:
+            stmt = stmt.where(Conversation.status == status)
+
+        activity_col = func.coalesce(Conversation.last_message_at, Conversation.created_at)
+        stmt = stmt.order_by(activity_col.desc(), Conversation.created_at.desc())
+
+        if limit is not None and limit > 0:
+            stmt = stmt.limit(limit)
+        if offset is not None and offset > 0:
+            stmt = stmt.offset(offset)
+
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_conversation_messages(
         self,
         conversation_id: uuid.UUID,
         limit: int | None = None,
         include_citations: bool = True,
     ) -> list[Message]:
-        """Retrieve messages for a conversation ordered chronologically by sequence_number.
-
-        Args:
-            conversation_id: UUID of the conversation.
-            limit: Optional maximum number of messages to return.
-            include_citations: If True, eagerly loads citations and cited chunks.
-
-        Returns:
-            List of Message instances ordered by sequence_number ascending.
-        """
         if not isinstance(conversation_id, uuid.UUID):
             raise TypeError(
                 f"conversation_id must be a uuid.UUID, got {type(conversation_id).__name__}"
@@ -156,12 +156,6 @@ class ConversationRepository:
 
     async def get_next_sequence_number(self, conversation_id: uuid.UUID) -> int:
         """Compute the next monotonically increasing sequence number for a conversation.
-
-        Should be called within a transaction where the conversation row is locked
-        via SELECT FOR UPDATE to avoid race conditions.
-
-        Returns:
-            Next positive integer sequence number (starts at 1).
         """
         if not isinstance(conversation_id, uuid.UUID):
             raise TypeError(
@@ -186,19 +180,6 @@ class ConversationRepository:
         metadata_: dict[str, Any] | None = None,
     ) -> Message:
         """Create and flush a new Message record within the conversation.
-
-        Args:
-            conversation_id: UUID of parent conversation.
-            sequence_number: Positive sequence number.
-            role: One of 'user', 'assistant', 'system'.
-            content: Message text content.
-            model_name: Optional LLM model identifier.
-            token_count: Optional token count.
-            status: Message status ('completed', 'pending', 'failed').
-            metadata_: Optional metadata dictionary.
-
-        Returns:
-            The created and flushed Message instance.
         """
         if sequence_number <= 0:
             raise ValueError(f"sequence_number must be positive (> 0), got {sequence_number}")
@@ -255,18 +236,6 @@ class ConversationRepository:
         citations_data: list[dict[str, Any]],
     ) -> list[MessageCitation]:
         """Create and flush MessageCitation records for an assistant message.
-
-        Args:
-            message_id: UUID of the assistant message.
-            citations_data: List of citation dictionaries containing:
-                - chunk_id: uuid.UUID
-                - citation_order: int (> 0)
-                - relevance_score: float | None
-                - cited_text: str | None
-                - page_number: int | None
-
-        Returns:
-            List of created MessageCitation instances.
         """
         citations: list[MessageCitation] = []
         for item in citations_data:
@@ -302,12 +271,6 @@ class ConversationRepository:
         chunk_ids: Sequence[uuid.UUID],
     ) -> dict[uuid.UUID, int | None]:
         """Retrieve page_start for a sequence of PaperChunk UUIDs from PostgreSQL.
-
-        Args:
-            chunk_ids: Sequence of chunk UUIDs to look up.
-
-        Returns:
-            Dictionary mapping chunk_id to its page_start (or None if not recorded).
         """
         if not chunk_ids:
             return {}

@@ -42,7 +42,6 @@ class BuiltContext:
 
 class ContextManager:
     """Manages short-term recent history, stored conversation summaries,
-
     and token budget enforcement for both General Chat and Chat with Paper.
     """
 
@@ -75,16 +74,11 @@ class ContextManager:
         repo: ConversationRepository,
     ) -> str | None:
         """Summarize older messages if history exceeds the configured threshold.
-
-        Saves summary into conversation.context_summary and records last_summarized_sequence
-        in conversation.metadata_ to prevent repeated summarization.
-        Falls back gracefully if LLM summarization fails.
         """
         if self.llm_client is None:
             return conversation.context_summary
 
         try:
-            # 1. Fetch completed messages for this conversation
             messages = await repo.get_conversation_messages(
                 conversation.id,
                 include_citations=False,
@@ -101,7 +95,6 @@ class ContextManager:
             if total_count < self.summarization_threshold:
                 return conversation.context_summary
 
-            # 2. Older messages are those prior to the recent window
             older_count = total_count - self.recent_message_limit
             if older_count <= 0:
                 return conversation.context_summary
@@ -109,20 +102,16 @@ class ContextManager:
             cutoff_msg = completed_messages[older_count - 1]
             cutoff_sequence = cutoff_msg.sequence_number
 
-            # Check what sequence has already been summarized
             metadata = dict(conversation.metadata_ or {})
             last_summarized_sequence = int(metadata.get("last_summarized_sequence", 0))
 
             if cutoff_sequence <= last_summarized_sequence:
-                # Already summarized up to or past the cutoff
                 return conversation.context_summary
 
             unsummarized_count = cutoff_sequence - last_summarized_sequence
             if unsummarized_count < self.min_summarize_batch and conversation.context_summary:
-                # Wait for minimum batch size before re-summarizing
                 return conversation.context_summary
 
-            # 3. Retrieve eligible unsummarized messages
             unsummarized_msgs = await repo.get_messages_for_summarization(
                 conversation_id=conversation.id,
                 min_sequence=last_summarized_sequence + 1,
@@ -139,7 +128,6 @@ class ContextManager:
             if not msgs_payload:
                 return conversation.context_summary
 
-            # 4. Generate summary using LLM
             logger.info(
                 "Triggering summarization for conversation %s (messages %d..%d)",
                 conversation.id,
@@ -151,7 +139,6 @@ class ContextManager:
                 existing_summary=conversation.context_summary,
             )
 
-            # Defensive check: ensure summarizer produced valid text
             if not new_summary or not str(new_summary).strip():
                 logger.warning(
                     "Summarizer returned empty summary text; preserving previous summary for conversation %s",
@@ -161,7 +148,6 @@ class ContextManager:
 
             clean_summary = str(new_summary).strip()
 
-            # 5. Persist to database
             await repo.update_context_summary(
                 conversation_id=conversation.id,
                 context_summary=clean_summary,
@@ -173,7 +159,6 @@ class ContextManager:
 
             return clean_summary
         except Exception as exc:
-            # Graceful fallback: do not break the chat flow
             logger.warning(
                 "Conversation summarization failed gracefully: %s. Using recent history.",
                 type(exc).__name__,
@@ -189,20 +174,9 @@ class ContextManager:
         chat_type: Literal["general", "paper"] = "paper",
     ) -> BuiltContext:
         """Retrieve recent messages, include summary, enforce token budget, and prevent duplication.
-
-        Args:
-            conversation_id: UUID of the conversation.
-            repo: ConversationRepository instance.
-            current_question: Current user question text.
-            summary: Stored conversation summary (or None).
-            chat_type: 'general' or 'paper'.
-
-        Returns:
-            BuiltContext with chronological history messages and token estimation.
         """
         clean_q = current_question.strip() if current_question else ""
 
-        # 1. Fetch recent completed messages from repository
         recent_db_messages = await repo.get_recent_messages(
             conversation_id,
             limit=self.recent_message_limit,
@@ -214,33 +188,27 @@ class ContextManager:
             if m.content and m.content.strip()
         ]
 
-        # 2. Avoid duplicating the current user message if it was already recorded
         if raw_history and clean_q:
             last_msg = raw_history[-1]
             if last_msg.get("role") == "user" and last_msg.get("content", "").strip() == clean_q:
                 raw_history.pop()
 
-        # 3. Enforce token budget
-        # Budget must accommodate summary, question, and recent messages
         summary_tokens = estimate_tokens(summary or "")
         question_tokens = estimate_tokens(clean_q)
         fixed_tokens = summary_tokens + question_tokens
 
         available_history_tokens = max(1, self.max_context_tokens - fixed_tokens)
 
-        # Truncate oldest messages if history exceeds token budget (working backwards)
         selected_history: list[dict[str, str]] = []
         accumulated_history_tokens = 0
 
         for msg in reversed(raw_history):
             msg_tokens = estimate_tokens(msg.get("content", ""))
             if accumulated_history_tokens + msg_tokens > available_history_tokens and selected_history:
-                # Exceeds budget, drop older messages
                 break
             selected_history.append(msg)
             accumulated_history_tokens += msg_tokens
 
-        # Restore chronological ascending order
         final_history = list(reversed(selected_history))
 
         total_tokens = fixed_tokens + accumulated_history_tokens

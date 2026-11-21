@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 import uuid
 
@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 import app.database.model_registry  # noqa: F401 - ensures cross-module relationship mappers are registered
+from app.core.exceptions import ActiveJobConflictError
+from app.modules.conversation.models import Message, MessageCitation
 from app.modules.ingestion.models import IngestionJob, PaperChunk
 from app.modules.papers.models import Paper, PaperFile, normalize_doi
 
@@ -53,10 +55,6 @@ def validate_and_normalize_sha256(checksum: str | None) -> str | None:
     return checksum.lower()
 
 
-# -------------------------------------------------------------------------
-# Repository Exceptions Hierarchy
-# -------------------------------------------------------------------------
-
 class PaperRepositoryError(Exception):
     """Base exception for paper repository errors."""
 
@@ -72,10 +70,6 @@ class PaperFileNotFoundError(PaperRepositoryError):
 class PaperValidationError(PaperRepositoryError):
     """Raised when invalid parameters or arguments are supplied to the repository."""
 
-
-# -------------------------------------------------------------------------
-# Paper Repository
-# -------------------------------------------------------------------------
 
 class PaperRepository:
     """Asynchronous repository for Paper and PaperFile data access.
@@ -127,6 +121,76 @@ class PaperRepository:
 
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def delete_paper(self, paper_id: uuid.UUID) -> tuple[bool, list[str]]:
+        """Delete a research paper, cascading all chunks, files, and jobs, while preserving citation snapshots.
+
+        Args:
+            paper_id: UUID of the research paper.
+
+        Returns:
+            Tuple of (deleted: bool, storage_keys: list[str]).
+            If paper is not found, returns (False, []).
+
+        Raises:
+            TypeError: If paper_id is not a uuid.UUID instance.
+            ActiveJobConflictError: If the paper is currently undergoing active ingestion.
+        """
+        if not isinstance(paper_id, uuid.UUID):
+            raise TypeError(f"paper_id must be a uuid.UUID, got {type(paper_id).__name__}")
+
+        paper = await self.get_by_id(paper_id, include_files=True)
+        if paper is None:
+            return False, []
+
+        stmt_active_jobs = select(IngestionJob).where(
+            IngestionJob.paper_id == paper_id,
+            IngestionJob.status.in_(["pending", "processing"]),
+        )
+        active_job_res = await self.session.execute(stmt_active_jobs)
+        active_job = active_job_res.scalars().first()
+        if active_job is not None:
+            raise ActiveJobConflictError(
+                f"Cannot delete paper '{paper_id}': active ingestion job '{active_job.id}' is currently in status '{active_job.status}'."
+            )
+
+        storage_keys = [
+            f.storage_key
+            for f in (paper.files or [])
+            if f.storage_provider.lower() == "cloudinary" and f.storage_key
+        ]
+
+        # Snapshot citations into message metadata before deleting to prevent RESTRICT fk violation
+        stmt_citations = (
+            select(MessageCitation, Message, PaperChunk)
+            .join(PaperChunk, MessageCitation.chunk_id == PaperChunk.id)
+            .join(Message, MessageCitation.message_id == Message.id)
+            .where(PaperChunk.paper_id == paper_id)
+        )
+        res_citations = await self.session.execute(stmt_citations)
+        citations_to_delete = res_citations.all()
+
+        for cit, msg, chunk in citations_to_delete:
+            meta = dict(msg.metadata_ or {})
+            history = list(meta.get("historical_citations", []))
+            history.append({
+                "citation_order": cit.citation_order,
+                "page_number": cit.page_number,
+                "relevance_score": cit.relevance_score,
+                "cited_text": cit.cited_text,
+                "paper_title": paper.title,
+                "paper_id": str(paper.id),
+                "chunk_id": str(chunk.id),
+                "deleted_at": datetime.now(timezone.utc).isoformat(),
+            })
+            meta["historical_citations"] = history
+            msg.metadata_ = meta
+            await self.session.delete(cit)
+
+        await self.session.delete(paper)
+        await self.session.flush()
+
+        return True, storage_keys
 
     async def get_by_doi(
         self,

@@ -31,8 +31,9 @@ function formatPaperDate(isoString) {
  * @param {string|null} props.paperId - UUID of the selected paper
  * @param {Function} props.onClose - Dismiss modal handler
  * @param {Function} props.onStartChat - Initiate research conversation handler
+ * @param {Function} [props.onDelete] - Initiate paper deletion handler
  */
-export default function PaperDetailModal({ isOpen, paperId, onClose, onStartChat }) {
+export default function PaperDetailModal({ isOpen, paperId, onClose, onStartChat, onDelete }) {
   const [details, setDetails] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -253,13 +254,30 @@ export default function PaperDetailModal({ isOpen, paperId, onClose, onStartChat
 
         {/* Footer Actions */}
         <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-200/60 transition-colors cursor-pointer"
-          >
-            Close
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-200/60 transition-colors cursor-pointer"
+            >
+              Close
+            </button>
+            {details && onDelete && (
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onDelete(details);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-rose-600 hover:text-rose-700 hover:bg-rose-50 transition-colors cursor-pointer"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+                <span>Delete Paper</span>
+              </button>
+            )}
+          </div>
 
           {details && (
             <button
